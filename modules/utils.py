@@ -3,6 +3,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
+import optuna
+from optuna.distributions import IntUniformDistribution, FloatDistribution, CategoricalDistribution
 
 
 def evaluate_model(model: nn.Module, data_loader: DataLoader, device):
@@ -69,3 +71,46 @@ def split_and_get_loaders(dataset: Dataset, batch_size: int):
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=True, drop_last=True)
 
     return train_loader, val_loader, test_loader
+
+
+def manual_write_study_params(study_name: str, storage: str):
+    params = {
+        "window_length": 128,   # or 160
+        "stride": 2,            # between 2-3
+        "hidden_size": 128,     # 64-192 step 32
+        "num_layers": 2,        # 1-3
+        "dropout": 0.2,         # 0.0-0.4
+        "lr": 0.001,            # 3e-4 to 3e-2
+        "batch_size": 32,       # 32 or 64
+    }
+
+    try:
+        optuna.delete_study(study_name=study_name, storage=storage)
+    except KeyError:
+        pass
+    study = optuna.create_study(
+        study_name=study_name,
+        storage=storage,
+        direction="maximize",
+    )
+
+    dists = {
+        "window_length": IntUniformDistribution(128, 160),
+        "stride": FloatDistribution(2, 3),
+        "hidden_size": IntUniformDistribution(64, 192, step=32),
+        "num_layers": IntUniformDistribution(1, 3),
+        "dropout": FloatDistribution(0.0, 0.4),
+        "lr": FloatDistribution(3e-4, 3e-2),
+        "batch_size": CategoricalDistribution([32, 64]),
+    }
+
+    trial = optuna.create_trial(
+        params=params,
+        distributions=dists,
+        value=0.0,
+        state=optuna.trial.TrialState.COMPLETE,
+    )
+
+    study.add_trial(trial)
+
+    return study.best_params
