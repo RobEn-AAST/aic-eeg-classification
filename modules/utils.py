@@ -80,7 +80,7 @@ def manual_write_study_params(study_name: str, storage: str):
         "hidden_size": 128,     # 64-192 step 32
         "num_layers": 2,        # 1-3
         "dropout": 0.2,         # 0.0-0.4
-        "lr": 0.001,            # 3e-4 to 3e-2
+        "lr": 0.01,            # 3e-4 to 3e-2
         "batch_size": 32,       # 32 or 64
     }
 

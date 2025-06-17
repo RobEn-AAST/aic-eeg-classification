@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+
 class EEGDataset(Dataset):
     def __init__(self, data_path, trial_length, window_length=128, stride=None) -> None:
         """
@@ -51,13 +52,17 @@ class EEGDataset(Dataset):
                     trial_data = df.iloc[start:end, :-1].values  # shape [trial_length x C]
 
                     for i in range(0, trial_length - window_length + 1, stride):
-                        win = trial_data[i: i + window_length, :] # trial_window x C
+                        win = trial_data[i : i + window_length, :].T  # C x tiral_length
                         self.data.append(win.astype(np.float32))
                         self.labels.append([trial_label])
 
-
         self.data = np.array(self.data)  # B x window_length x c
-        self.labels = np.array(self.labels) # B x 1 = 5200 x 1 
+        self.labels = np.array(self.labels)  # B x 1 = 5200 x 1
+
+        # Normalize to [-1, 1] before converting to tensor
+        data_min = self.data.min()
+        data_max = self.data.max()
+        self.data = 2 * (self.data - data_min) / (data_max - data_min) - 1
 
         unique_freqs = np.unique(np.array([label[0] for label in self.labels]))
         self.freq_to_idx = {freq: idx for idx, freq in enumerate(unique_freqs)}
@@ -74,5 +79,3 @@ class EEGDataset(Dataset):
 
     def get_freq_mapping(self):
         return {v: k for k, v in self.freq_to_idx.items()}  # idx -> freq mapping
-
-

@@ -6,3 +6,8 @@ ask about libraries we use how to make them reproducible too, is this process do
 
 set up requirements.txt and virtual environment
 get the separate trainer (non optimizer) to run and save checkpoints while going
+
+is using a data normalizer minmax better than zscore?
+
+
+TODO CANCEL ALL RANDOMNESS
