@@ -1,2 +1,2 @@
 from .EEGDataset import EEGDataset
-import utils
+from .trainer import Trainer
