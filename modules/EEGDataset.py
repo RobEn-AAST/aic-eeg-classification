@@ -3,19 +3,22 @@ import os
 import numpy as np
 import pandas as pd
 import torch
+from scipy.fft import fft
 
 
 class EEGDataset(Dataset):
-    def __init__(self, data_path, trial_length, window_length=128, stride=None) -> None:
+    def __init__(self, data_path, trial_length, window_length=128, stride=None, domain='time') -> None:
         """
-        todo complete documentation
-        trial_length: the number of rows before frequency shift in the dataset
-
-        N: sample length
-        C: channels (number of electrodes)
-        B: Batch Size
+        Args:
+            data_path: Path to the SSVEP dataset
+            trial_length: Number of samples before frequency shift
+            window_length: Length of each window
+            stride: Step size between windows
+            domain: 'time' or 'freq' - which domain to represent the data in
         """
         super().__init__()
+        assert domain in ['time', 'freq'], "domain must be either 'time' or 'freq'"
+        self.domain = domain
 
         assert trial_length % window_length == 0, "Please choose window_length that divides by trial_length"
         self.data_path = data_path
@@ -56,10 +59,20 @@ class EEGDataset(Dataset):
                         self.data.append(win.astype(np.float32))
                         self.labels.append([trial_label])
 
-        self.data = np.array(self.data)  # B x window_length x c
+        self.data = np.array(self.data)  # B x c x trial_length
         self.labels = np.array(self.labels)  # B x 1 = 5200 x 1
 
-        # Normalize to [-1, 1] before converting to tensor
+        # Convert to frequency domain if requested
+        if self.domain == 'freq':
+            # Note: we only take the magnitude spectrum
+            self.data = np.abs(fft(self.data, axis=1))
+            # Optionally: only keep the first half (since FFT output is symmetric for real input)
+            self.data = self.data[:, :, :window_length//2,]
+            # Optionally: apply log transform to compress dynamic range
+            self.data = np.log1p(self.data)  # log1p = log(1+x) to handle zeros
+            print("done converting to freq domain")
+
+        # Normalize to [-1, 1]
         data_min = self.data.min()
         data_max = self.data.max()
         self.data = 2 * (self.data - data_min) / (data_max - data_min) - 1
