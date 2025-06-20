@@ -8,7 +8,8 @@ from modules import EEGDataset
 
 
 class Trainer:
-    def __init__(self, data_path, train_epochs=1000, tune_epochs=30, optuna_n_trials=120):
+    def __init__(self, data_path, train_epochs=1000, tune_epochs=30, optuna_n_trials=120, 
+                 optuna_db_path="optuna_studies.db", model_path="./checkpoints/ssvep.pth"):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.train_epochs = train_epochs
@@ -25,14 +26,11 @@ class Trainer:
         self.test_loader = None
         self.dataset = None
 
-        self.storage = "sqlite:///optuna_studies.db"
+        self.storage = f"sqlite:///{optuna_db_path}"
         self.study_name = "ssvep_classifier_optimization"
         self.data_path = data_path
 
-
-        self.checkpoint_path = "./checkpoints/ssvep"
-        os.makedirs(os.path.join(self.checkpoint_path, "models"), exist_ok=True)
-        self.checkpoint_model_path = os.path.join(self.checkpoint_path, "models")
+        self.model_path = model_path
 
     def _train_loop(self, n_epochs: int, should_save=False, should_print=False):
         assert isinstance(self.optimizer, torch.optim.Optimizer), "optimizer is not a valid optimizer"
@@ -70,25 +68,34 @@ class Trainer:
 
             if should_save:
                 self.model.cpu()
-                torch.save(self.model.state_dict(), os.path.join(self.checkpoint_model_path, f"ssvep.pth"))
+                torch.save(self.model.state_dict(), self.model_path)
                 self.model.to(self.device)
 
-    def _prepare_training(self, is_trial, stride_factor=2):
-        if is_trial:
-            assert isinstance(self.trial, optuna.Trial), "trial is none, cant' suggest params"
+    def _prepare_training(self,
+        is_trial, do_not_modify_network=False,
+        batch_size=None, window_length=None, stride_factor=3,
+        ):
+            if is_trial:
+                assert isinstance(self.trial, optuna.Trial), "trial is none, cant' suggest params"
+                if do_not_modify_network:
+                    best_params = self._get_study().best_params
+                    window_length = best_params['window_length']
+                    batch_size = batch_size or best_params["batch_size"]
+                else:
+                    window_length = window_length or self.trial.suggest_categorical("window_length", [175, 250, 350])
+                    batch_size = batch_size or self.trial.suggest_categorical("batch_size", [32, 64])
+            else:
+                best_params = self._get_study().best_params
+                window_length = window_length or best_params['window_length']
+                batch_size = batch_size or best_params["batch_size"]
 
-            window_length = self.trial.suggest_categorical("window_length", [175, 250, 350])
-            batch_size = self.trial.suggest_categorical("batch_size", [32, 64])
-
-        else:
-            best_params = self._get_study().best_params
-            window_length = best_params['window_length']
-            batch_size = best_params["batch_size"]
-
-        stride = int(window_length // stride_factor)
+            stride = int(window_length // stride_factor)
+            self._set_dataset(window_length, stride, batch_size)
+    
+    def _set_dataset(self, window_length, stride, batch_size):
         self.dataset = EEGDataset(data_path=self.data_path, window_length=window_length, stride=stride)
-
         self.train_loader, self.val_loader, self.test_loader = split_and_get_loaders(self.dataset, batch_size)
+        
 
     def _objective(self, trial: optuna.Trial):
         self.trial = trial

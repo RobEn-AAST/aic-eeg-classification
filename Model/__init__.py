@@ -1,0 +1,2 @@
+from .ssvep_classifier import SSVEPClassifier
+from .ssvep_best_params import ssvep_best_params
