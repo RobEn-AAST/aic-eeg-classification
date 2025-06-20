@@ -6,7 +6,7 @@ ssvep_best_params = {
     "kernLength": 256,
     "F1" :  128,
     "D" :  2,
-    "F2" :  96,
+    "F2" : 128, # OOPS 96,
     "hidden_dim": 256,
     "layer_dim": 3,
     "lr" :  0.00030241790493218325, # reduce lr as you are going

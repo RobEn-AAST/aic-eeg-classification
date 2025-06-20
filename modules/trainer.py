@@ -8,8 +8,7 @@ from modules import EEGDataset
 
 
 class Trainer:
-    def __init__(self, data_path, train_epochs=1000, tune_epochs=30, optuna_n_trials=120, 
-                 optuna_db_path="optuna_studies.db", model_path="./checkpoints/ssvep.pth"):
+    def __init__(self, data_path, optuna_db_path, model_path, train_epochs=1000, tune_epochs=30, optuna_n_trials=120):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.train_epochs = train_epochs
@@ -85,7 +84,7 @@ class Trainer:
                     window_length = window_length or self.trial.suggest_categorical("window_length", [175, 250, 350])
                     batch_size = batch_size or self.trial.suggest_categorical("batch_size", [32, 64])
             else:
-                best_params = self._get_study().best_params
+                # best_params = self._get_study().best_params
                 window_length = window_length or best_params['window_length']
                 batch_size = batch_size or best_params["batch_size"]
 
