@@ -8,7 +8,7 @@ from modules import EEGDataset
 
 
 class Trainer:
-    def __init__(self, data_path, trial_length, train_epochs=1000, tune_epochs=50, optuna_n_trials=120):
+    def __init__(self, data_path, train_epochs=1000, tune_epochs=30, optuna_n_trials=120):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.train_epochs = train_epochs
@@ -29,7 +29,6 @@ class Trainer:
         self.study_name = "ssvep_classifier_optimization"
         self.data_path = data_path
 
-        self.trial_length = trial_length
 
         self.checkpoint_path = "./checkpoints/ssvep"
         os.makedirs(os.path.join(self.checkpoint_path, "models"), exist_ok=True)
@@ -74,24 +73,20 @@ class Trainer:
                 torch.save(self.model.state_dict(), os.path.join(self.checkpoint_model_path, f"ssvep.pth"))
                 self.model.to(self.device)
 
-    def _prepare_training(self, is_trial):
+    def _prepare_training(self, is_trial, stride_factor=2):
         if is_trial:
             assert isinstance(self.trial, optuna.Trial), "trial is none, cant' suggest params"
 
-            window_length = self.trial.suggest_categorical("window_length", [160, 320])
-            stride_factor = self.trial.suggest_int("stride", 1, 3)
+            window_length = self.trial.suggest_categorical("window_length", [175, 250, 350])
             batch_size = self.trial.suggest_categorical("batch_size", [32, 64])
 
         else:
             best_params = self._get_study().best_params
             window_length = best_params['window_length']
-            stride_factor = best_params['stride']
             batch_size = best_params["batch_size"]
 
         stride = int(window_length // stride_factor)
-        self.dataset = EEGDataset(self.data_path, self.trial_length, window_length, stride=stride)
-        unique_freqs = torch.unique(self.dataset.labels)
-        print("unique frequencies in dataset: ", unique_freqs)
+        self.dataset = EEGDataset(data_path=self.data_path, window_length=window_length, stride=stride)
 
         self.train_loader, self.val_loader, self.test_loader = split_and_get_loaders(self.dataset, batch_size)
 
@@ -116,7 +111,7 @@ class Trainer:
                 pass
 
         study = self._get_study()
-        study.optimize(self._objective, n_trials=self.optuna_n_trials, timeout=60 * 10)
+        study.optimize(self._objective, n_trials=self.optuna_n_trials)
 
         # Print optimization results
         print("\nStudy statistics:")
@@ -141,3 +136,7 @@ class Trainer:
         evaluation = evaluate_model(self.model, self.val_loader, self.device)
         print("done training")
         return evaluation
+
+if __name__ == '__main__':
+    trainer = Trainer('./data/mtcaic3')
+    print('hi')

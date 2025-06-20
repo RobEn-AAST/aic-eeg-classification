@@ -7,8 +7,17 @@ import optuna
 from optuna.distributions import IntUniformDistribution, FloatDistribution, CategoricalDistribution
 
 
+def get_closest_divisor(target: int, n=1750):
+    n = n or 1750
+
+    divisors = [i for i in range(1, n+1) if n % i == 0]
+    closest = min(divisors, key=lambda x: abs(x - target))
+    return closest
+
+
 def evaluate_model(model: nn.Module, data_loader: DataLoader, device):
     model.eval()
+    model.to(device)
     all_preds = []
     all_labels = []
 
@@ -114,3 +123,11 @@ def manual_write_study_params(study_name: str, storage: str):
     study.add_trial(trial)
 
     return study.best_params
+
+
+if __name__ == '__main__':
+    print(get_closest_divisor(160))
+    print(get_closest_divisor(200))
+    print(get_closest_divisor(300))
+    print(get_closest_divisor(400))
+    print(get_closest_divisor(700))

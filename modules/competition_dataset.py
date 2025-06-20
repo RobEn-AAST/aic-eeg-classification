@@ -6,91 +6,107 @@ import pandas as pd
 import torch
 from scipy.fft import fft
 from scipy import signal
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 LABELS = ['Backward', 'Forward', 'Left', 'Right']
-LABEL_TO_IDX = {label: idx for idx, label in enumerate(LABELS)}
+LABEL_TO_IDX = {lbl: i for i, lbl in enumerate(LABELS)}
 IDX_TO_LABEL = {idx: label for idx, label in enumerate(LABELS)}
 
+# Precompute filter once
+_SFREQ    = 256
+_LOW, _HI = 3, 100
+_NYQ      = _SFREQ / 2.0
+_B, _A    = signal.butter(4, [_LOW/_NYQ, _HI/_NYQ], btype='bandpass')
+
 class EEGDataset(Dataset):
-    def __init__(self, data_path, window_length=128, stride=None, domain="time", trial_length=1750) -> None:
-        """
-        Args:
-            data_path: Path to the SSVEP dataset
-            window_length: Length of each window
-            stride: Step size between windows
-            domain: 'time' or 'freq' - which domain to represent the data in
-        """
+    def __init__(
+        self,
+        data_path,
+        window_length=128,
+        stride=None,
+        domain="time",
+        trial_length=1750,
+    ):
         super().__init__()
-        assert domain in ["time", "freq"], "domain must be either 'time' or 'freq'"
-        self.domain = domain
+        assert domain in ("time", "freq")
+        assert trial_length % window_length == 0, f"widnow length {window_length} doesn't divide trial length {trial_length}"
+        
+        self.domain        = domain
         self.window_length = window_length
+        self.stride        = stride or window_length
 
-        assert trial_length % window_length == 0, "window length must divide by 17500 (17500 is the sampling frequency in Hz)"
+        labels_df = pd.read_csv(
+            os.path.join(data_path, "train.csv"),
+            usecols=["subject_id","trial_session","trial","task","label"]
+        )
+        ssvep     = labels_df.query("task=='SSVEP'")
+        
+        eeg_channels = ["FZ","C3","CZ","C4","PZ","PO7","OZ","PO8"]
+        usecols      = eeg_channels + ["Validation"]
 
-        # Load labels first
-        labels_df = pd.read_csv(os.path.join(data_path, "train.csv"))
-        ssvep_df = labels_df[labels_df["task"] == "SSVEP"]
+        # Cache for CSVs
+        file_cache = {}
+        windows = []
+        labels  = []
 
-        self.data = []
-        self.labels = []
-
-        eeg_channels = ["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"]
-
-        # Group by subject/session to avoid reloading the same file
-        for _, row in ssvep_df.iterrows():
-            subj = row["subject_id"]
-            session = str(row["trial_session"])
-            trial = int(row["trial"])
-            file_path = os.path.join(
-                data_path,
-                "SSVEP/train",
-                subj,
-                session,
-                "EEGdata.csv",
-            )
-
-            if not os.path.exists(file_path):
-                print(f"Warning: File not found: {file_path}")
+        for _, row in ssvep.iterrows():
+            subj, sess, trial = row.subject_id, str(row.trial_session), int(row.trial)
+            fp = os.path.join(data_path, "SSVEP","train",subj,sess,"EEGdata.csv")
+            if not os.path.exists(fp):
+                print(f"Warning: missing {fp}")
                 continue
 
-            eeg_data = pd.read_csv(file_path)
+            # load once
+            if fp not in file_cache:
+                file_cache[fp] = pd.read_csv(fp, usecols=usecols).values
+            arr = file_cache[fp]
 
-            # Get the slice for this trial
             start = (trial - 1) * trial_length
-            end = trial * trial_length
-            trial_df = eeg_data.iloc[start:end]
+            end   = trial     * trial_length
+            trial_data = arr[start:end]
+            # filter valid rows and transpose → shape [C x T]
+            mask = trial_data[:, -1] == 1
+            T    = trial_data[mask, :-1].T  # drop 'Validation' col
 
-            # Filter valid data points using the Validation column
-            valid_data = trial_df[trial_df["Validation"] == 1]
+            # sliding windows → shape [C x (n_win) x window_length]
+            if T.shape[1] < self.window_length:
+                print(f'Skipped, T.shape: {T.shape}, self.window_length: {self.window_length}')
+                continue
+            all_wins = sliding_window_view(T, self.window_length, axis=1)
+            # subsample by stride → [C x n_wins' x L]
+            all_wins = all_wins[:, ::self.stride, :]
+            # reshape → [n_wins' x C x L]
+            W = all_wins.transpose(1,0,2)
+            
+            windows.append(W)
+            labels.extend([LABEL_TO_IDX[row.label]] * W.shape[0])
 
-            # Select only EEG channels
-            trial_data = valid_data[eeg_channels].values.T  # Shape: [C x T]
+        # stack into array [B x C x L]
+        data_array = np.vstack(windows).astype(np.float32)
+        labels_np  = np.array(labels, dtype=np.int64)
 
-            # Windowing with stride
-            if stride is None:
-                stride = window_length
+        # Avg reference per channel
+        data_array -= data_array.mean(axis=2, keepdims=True)
 
-            n_samples = trial_data.shape[1]
-            for start_idx in range(0, n_samples - window_length + 1, stride):
-                end_idx = start_idx + window_length
-                window = trial_data[:, start_idx:end_idx]
-                if window.shape[1] == window_length:
-                    self.data.append(window.astype(np.float32))
-                    self.labels.append(row["label"])
+        # Band‑pass filter all at once over axis=2
+        data_array = signal.filtfilt(_B, _A, data_array, axis=2)
 
-        self.data = np.array(self.data)  # [B x C x T]
-        self.labels = np.array([LABEL_TO_IDX[label] for label in self.labels])
-
-        # Data preprocessing
-        self.data = self._avg_refrencing(self.data)
-        self.data = self._band_pass_filter(self.data)
+        # Frequency domain?
         if self.domain == "freq":
-            self.data = self._convert_freq(self.data)
-        self.data = self._normalize(self.data)
+            # rfft → [B x C x (L//2+1)]
+            data_array = np.abs(rfft(data_array, axis=2))
+            data_array = np.log1p(data_array)
 
-        self.data = torch.tensor(self.data) # B x C x T
-        self.labels = torch.tensor(self.labels) # [B]
+        # Normalize to zero‑mean, unit‑var per channel
+        mean = data_array.mean(axis=2, keepdims=True)
+        std  = data_array.std(axis=2, keepdims=True) + 1e-6
+        data_array = (data_array - mean) / std
+
+        # convert to torch
+        self.data   = torch.from_numpy(data_array)
+        self.labels = torch.from_numpy(labels_np)
+
 
     def _convert_freq(self, data: np.ndarray):
         self.data = np.abs(fft(data, axis=1))
@@ -152,17 +168,13 @@ def encode_label(label):
 if __name__ == "__main__":
     # %%
     import matplotlib.pyplot as plt
-
-    def get_closest_divisor(target: int):
-        target = 160
-        n = 17500
-
-        divisors = [i for i in range(1, n+1) if n % i == 0]
-        closest = min(divisors, key=lambda x: abs(x - target))
-        print(f"Closest divisor of {n} to {target} is {closest}")
+    import time
 
     TRIAL_LENGTH = 640
     window_length = 175
     stride = window_length // 3
 
-    dataset_processed = EEGDataset(data_path='/home/zeyadcode/Workspace/ai_projects/eeg_detection/data/mtcaic3', window_length=window_length, stride=stride)
+    start = time.time()
+    dataset_processed = EEGDataset(data_path='./data/mtcaic3', window_length=window_length, stride=stride)
+    print(f"time taken: {time.time() - start}")
+    print("hello")

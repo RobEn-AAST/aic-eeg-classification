@@ -1,2 +1,2 @@
-from .EEGDataset import EEGDataset
+from .competition_dataset import EEGDataset
 from .trainer import Trainer
