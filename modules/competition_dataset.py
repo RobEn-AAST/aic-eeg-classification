@@ -33,7 +33,7 @@ class EEGDataset(Dataset):
     ):
         super().__init__()
         assert domain in ("time", "freq")
-        assert trial_length % window_length == 0, f"window length {window_length} doesn't divide trial length {trial_length}"
+        # assert trial_length % window_length == 0, f"window length {window_length} doesn't divide trial length {trial_length}"
 
         self.domain        = domain
         self.window_length = window_length
@@ -152,6 +152,7 @@ class EEGDataset(Dataset):
     def _normalize(self, data: np.ndarray):
         mean = data.mean(axis=2, keepdims=True)
         std  = data.std(axis=2, keepdims=True) + 1e-6
+        print(f"mean: {mean}, std: {std}")
         data = (data - mean) / std
         return data
 

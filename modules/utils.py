@@ -36,7 +36,7 @@ def evaluate_model(model: nn.Module, data_loader: DataLoader, device):
     return float(accuracy)
 
 
-def split_and_get_loaders(dataset: Dataset, batch_size: int):
+def split_and_get_loaders(dataset: Dataset, batch_size: int, train_size: float = 0.8):
     """
     gets dataset and splits it into train, validation, test sets
     returns train dataloader, validation dataloader, test dataloader
@@ -55,7 +55,7 @@ def split_and_get_loaders(dataset: Dataset, batch_size: int):
     X_train, X_val, Y_train, Y_val = train_test_split(
         X_train_val,
         Y_train_val,
-        test_size=0.2,
+        test_size=(1 - train_size),
         random_state=42,
         stratify=Y_train_val,
     )
