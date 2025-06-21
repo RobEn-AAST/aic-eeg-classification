@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from modules.utils import evaluate_model, split_and_get_loaders
 import optuna
 from modules import EEGDataset
-
+import numpy as np
 
 class Trainer:
     def __init__(self, data_path, optuna_db_path, model_path, train_epochs=1000, tune_epochs=30, optuna_n_trials=120):
@@ -72,7 +72,7 @@ class Trainer:
 
     def _prepare_training(self,
         is_trial, do_not_modify_network=False,
-        batch_size=None, window_length=None, stride_factor=3,
+        batch_size=None, window_length=None, stride_factor=3, is_wavelet=False
         ):
             if is_trial:
                 assert isinstance(self.trial, optuna.Trial), "trial is none, cant' suggest params"
@@ -88,12 +88,17 @@ class Trainer:
                 window_length = window_length or best_params['window_length']
                 batch_size = batch_size or best_params["batch_size"]
 
+            J = Q = None
+            if is_wavelet:
+                J = self.trial.suggest_int("J", 2, max(2, int(np.log2(window_length)) - 1))
+                Q = self.trial.suggest_int("Q", 4, 12)
+                
             stride = int(window_length // stride_factor)
-            self._set_dataset(window_length, stride, batch_size)
+            domain = "wavelet" if is_wavelet else "time"
+
+            self.dataset = EEGDataset(data_path=self.data_path, window_length=window_length, stride=stride, domain=domain, J=J, Q=Q)
+            self.train_loader, self.val_loader, self.test_loader = split_and_get_loaders(self.dataset, batch_size)
     
-    def _set_dataset(self, window_length, stride, batch_size):
-        self.dataset = EEGDataset(data_path=self.data_path, window_length=window_length, stride=stride)
-        self.train_loader, self.val_loader, self.test_loader = split_and_get_loaders(self.dataset, batch_size)
         
 
     def _objective(self, trial: optuna.Trial):
