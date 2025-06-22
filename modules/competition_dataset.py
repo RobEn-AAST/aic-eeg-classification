@@ -8,7 +8,8 @@ from scipy.fft import fft, rfft
 from scipy import signal
 from numpy.lib.stride_tricks import sliding_window_view
 from kymatio.torch import Scattering1D
-
+from sklearn.decomposition import PCA
+import joblib
 
 LABELS = ['Backward', 'Forward', 'Left', 'Right']
 LABEL_TO_IDX = {lbl: i for i, lbl in enumerate(LABELS)}
@@ -19,6 +20,7 @@ _SFREQ    = 256
 _LOW, _HI = 3, 100
 _NYQ      = _SFREQ / 2.0
 _B, _A    = signal.butter(4, [_LOW/_NYQ, _HI/_NYQ], btype='bandpass')
+n_channels = 8
 
 class EEGDataset(Dataset):
     def __init__(
@@ -32,6 +34,8 @@ class EEGDataset(Dataset):
         split="train",
         read_labels=True,
         data_fraction=1.0,
+        n_components=None,
+        pca_model_path=None,
         J=None, # int(np.log2(L)) - 1
         Q=8,
     ):
@@ -47,7 +51,8 @@ class EEGDataset(Dataset):
         self.read_labels = read_labels
         self.data_fraction = data_fraction
 
-        eeg_channels = ["FZ","C3","CZ","C4","PZ","PO7","OZ","PO8"]
+        # eeg_channels = ["FZ","C3","CZ","C4","PZ","PO7","OZ","PO8"]
+        eeg_channels = ["CZ", "C4", "C3"]
         usecols      = eeg_channels + ["Validation"]
 
         # Cache for CSVs
@@ -115,59 +120,67 @@ class EEGDataset(Dataset):
         data_array = np.vstack(windows).astype(np.float32)
         labels_np  = np.array(labels, dtype=np.int64)
 
-        # data_array = self._avg_refrencing(data_array)
-        data_array = self._band_pass_filter(data_array)
+        # data_array = self._avg_refrencing(data_array) # ! THIS ISN'T EVEN WORKING, IT'S DONE TERRIBLY
+        # data_array = self._band_pass_filter(data_array)
 
         if self.domain == "freq":
             data_array = self._convert_freq(data_array)
         elif self.domain == "wavelet":
             data_array = self._convert_wavelet_fast(data_array)
 
-        # --- CORRECTED NORMALIZATION LOGIC ---
-        # if split == 'train':
-        #     if self.domain == 'wavelet':
-        #         print("Calculating new normalization stats for WAVELET data...")
-        #         self.mean, self.std = self._get_normalization_stats_wavelet(data_array)
-        #     else: # For 'time' or 'freq'
-        #         print("Calculating new normalization stats for TIME/FREQ data...")
-        #         self.mean, self.std = self._get_normalization_stats_3d(data_array)
+        hardcoded = False
+        if not hardcoded:
+            if self.domain == 'wavelet':
+                print("Calculating new normalization stats for WAVELET data...")
+                self.mean, self.std = self._get_normalization_stats_wavelet(data_array)
+            else:
+                print("Calculating new normalization stats for TIME/FREQ data...")
+                self.mean, self.std = self._get_normalization_stats_3d(data_array)
                 
-        #     print(f"mean: {self.mean} \nstd: {self.std}")
-        # else: # For validation/test splits
-        #     if self.domain == 'wavelet':
-        #         # IMPORTANT: You must run with split='train' first to get these values
-        #         # and then paste them here. These are just placeholder shapes.
-        #         print("WARNING: Using placeholder stats for wavelet validation.")
-        #         print("You must calculate and paste the correct stats from a training run.")
-        #         # This is an example of what the shapes should look like, not the actual values
-        #         self.mean = np.zeros((1, 8, data_array.shape[2], 1), dtype=np.float32) 
-        #         self.std = np.ones((1, 8, data_array.shape[2], 1), dtype=np.float32)
-        #     else: # For 'time' or 'freq'
-        #         print("Using hardcoded normalization stats for TIME/FREQ data.")
-        self.mean = np.array([[
-            [ 0.00433759],
-            [ 0.05268171],
-            [-0.07471117],
-            [-0.12277558],
-            [-0.11001587],
-            [-0.06512193],
-            [-0.07288535],
-            [-0.08484039],]] , dtype=np.float32) # Paste your 3D stats here
-        self.std = np.array([[[1408.27902507],
-            [1344.04268848],
-            [1797.38544245],
-            [1601.98389635],
-            [2104.49976447],
-            [1004.73515194],
-            [ 977.94754907],
-            [ 938.82830072],]], dtype=np.float32)
+            print(f"mean: {self.mean} \nstd: {self.std}")
+        else:
+            self.mean = np.array([[[0.10631792],
+                [0.06761859],
+                [0.01615969],
+            ]]  , dtype=np.float32) # Paste your 3D stats here
+            self.std = np.array([
+                [[1466.00857751],
+                [1351.86877871],
+                [ 904.64003823],
+            ]], dtype=np.float32)
 
-        print(f"data shape: {data_array.shape}, mean shape: {self.mean.shape}")
+            print(f"data shape: {data_array.shape}, mean shape: {self.mean.shape}")
+            
         data_array = self._normalize(data_array)
 
+        if pca_model_path is not None:
+            # Convert torch tensor to numpy and reshape to (B, -1)
+            print("Using PCA")
+            B, C, T = data_array.shape  # (B, C, T)
+            data_array = data_array.reshape(B * T, C)  # (B * T, C)
+            assert n_components is not None, "n_components must be specified when to fit PCA."
+            
+            if self.split == 'train':
+                # Fit PCA on training data
+                self.pca = PCA(n_components=n_components)
+                self.pca.fit(data_array)
+                joblib.dump(self.pca, pca_model_path)
+                
+                print(f"PCA fitted and saved to {pca_model_path}")
+            else:
+                # For validation/test, load the pre-fitted PCA model
+                if not os.path.exists(pca_model_path):
+                    raise FileNotFoundError(f"PCA model path {pca_model_path} does not exist. Run training split first.")
+                self.pca = joblib.load(pca_model_path)
+                print(f"PCA model loaded from {pca_model_path}")
+
+            data_array = self.pca.transform(data_array) # (B*T x n_components)
+            data_array = data_array.reshape(B, T, n_components).transpose(0, 2, 1)
+            
         self.data = torch.from_numpy(data_array.copy()).to(torch.float32)
         self.labels = torch.from_numpy(labels_np).to(torch.int32)
         self.trial_ids = trial_ids
+
 
     def _convert_freq(self, data: np.ndarray):
         data = np.abs(rfft(data, axis=2))
@@ -222,10 +235,10 @@ def position_encode(subj, sess, trial):
     subj_idx = int(subj[1:]) - 1
     sess_idx = int(sess) - 1
     trial_idx = int(trial) - 1
-    return (subj_idx * 8 + sess_idx) * 10 + trial_idx
+    return (subj_idx * n_channels + sess_idx) * 10 + trial_idx
 def position_decode(code):
     trial_idx = code % 10; code //= 10
-    sess_idx = code % 8; subj_idx = code // 8
+    sess_idx = code % n_channels; subj_idx = code // n_channels
     return f"S{subj_idx + 1}", str(sess_idx + 1), str(trial_idx + 1)
 
 
@@ -240,7 +253,7 @@ if __name__ == "__main__":
     
     # IMPORTANT: To get the correct stats for validation, first run with 'train'
     print("--- First, running on training set to calculate stats ---")
-    train_dataset = EEGDataset(data_path, window_length=window_length, stride=stride, task="SSVEP", split="train", read_labels=True, domain="wavelet")
+    train_dataset = EEGDataset(data_path, window_length=window_length, stride=stride, task="SSVEP", split="train", read_labels=True, domain="time", pca_model_path='./checkpoints/ssvep/models/pca.pkl', n_components=3)
     print(f"Calculated Mean:\n{train_dataset.mean}")
     print(f"Calculated Std:\n{train_dataset.std}")
     print("\n--- Now you can copy these stats and create the validation set ---")

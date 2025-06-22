@@ -10,7 +10,8 @@ from Models import ssvep_best_params
 
 # It's good practice to define the model class in the script that uses it
 # or import it properly. I'm including it here for completeness.
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 class LSTMModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, layer_dim, output_dim):
@@ -28,6 +29,7 @@ class LSTMModel(nn.Module):
         out, (hn, cn) = self.lstm(x, (h0, c0))
         out = self.fc(out[:, -1, :])
         return out
+
 
 class DepthWiseConv2D(nn.Module):
     def __init__(self, in_channels, kernel_size, dim_mult=1, padding=0, bias=False):
@@ -49,24 +51,25 @@ class SeperableConv2D(nn.Module):
         out = self.pointwise(out)
         return out
 
+
 class SSVEPClassifier(nn.Module):
     # EEG Net Based
     # todo look at this https://paperswithcode.com/paper/a-transformer-based-deep-neural-network-model
-    def __init__(self, n_electrodes=16, n_samples=128, out_dim=4, dropout=0.25, kernLength=256, F1=96, D=1, F2=96, hidden_dim=100, layer_dim=1):
+    def __init__(self, n_electrodes=16, out_dim=4, dropout=0.25, kernLength=256, F1=96, D=1, F2=96, hidden_dim=100, layer_dim=1):
         super().__init__()
 
         # B x C x T
         self.block_1 = nn.Sequential(
-            nn.Conv2d(1, F1, (1, kernLength), padding='same', bias=False),
+            nn.Conv2d(1, F1, (1, kernLength), padding="same", bias=False),
             nn.BatchNorm2d(F1),
             #
             DepthWiseConv2D(F1, (n_electrodes, 1), dim_mult=D, bias=False),
-            nn.BatchNorm2d(F1*D),
+            nn.BatchNorm2d(F1 * D),
             nn.ELU(),
-            nn.MaxPool2d((1, 2)), # todo try making this max pool
+            nn.MaxPool2d((1, 2)),  # todo try making this max pool
             nn.Dropout(dropout),
             #
-            SeperableConv2D(F1 * D, F2, kernel_size=(1, 16), padding='same', bias=False),
+            SeperableConv2D(F1 * D, F2, kernel_size=(1, 16), padding="same", bias=False),
             nn.BatchNorm2d(F2),
             nn.ELU(),
             nn.MaxPool2d((1, 2)),
@@ -78,24 +81,39 @@ class SSVEPClassifier(nn.Module):
     def forward(self, x: torch.Tensor):
         """expected input shape: BxCxT"""
         x = x.unsqueeze(1)
-        y = self.block_1(x) # B x F1 x 1 x time_sub
+        y = self.block_1(x)  # B x F1 x 1 x time_sub
 
-        y = y.squeeze(2) # B x F1 x time_sub
-        y = y.permute(0, 2, 1) # B x time_sub x F1
+        y = y.squeeze(2)  # B x F1 x time_sub
+        y = y.permute(0, 2, 1)  # B x time_sub x F1
         y = self.lstm_head(y)
 
         return y
 
 
+model = SSVEPClassifier(
+    n_electrodes=3,
+    dropout=0.33066508963955576,
+    kernLength=64,
+    F1=8,
+    D=2,
+    F2=32,
+    hidden_dim=256,
+    layer_dim=2,
+).to(device)
+
+batch_size = 64
+window_length = 64 * 4
+stride = window_length // 3
+
 def main():
     # --- Config ---
-    data_path = './data/mtcaic3'
+    data_path = "./data/mtcaic3"
     split = "validation"
     task = "SSVEP"
-    model_path = "./checkpoints/ssvep/models/75_lstm.pth"
+    model_path = "./checkpoints/ssvep/models/ssvep_3_ch.pth"
     output_csv = "submission.csv"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     # --- Hyperparameter for confidence weighting ---
     # A higher value gives more power to very confident predictions.
     # 1.0 is a standard weighted average. 2.0 or 3.0 is more aggressive.
@@ -109,8 +127,6 @@ def main():
         id_lookup[key] = row["id"]
 
     # --- Load Dataset ---
-    window_length = 64 * 4
-    stride = window_length // 3
     dataset = EEGDataset(
         data_path=data_path,
         window_length=window_length,
@@ -122,17 +138,6 @@ def main():
 
     # --- Load Model ---
     # Using the ssvep_best_params from your notebook for model instantiation
-    model = SSVEPClassifier(
-        n_electrodes=8,
-        dropout=0.33066508963955576,
-        kernLength=64,
-        F1 = 96,
-        D = 2,
-        F2 = 96,
-        hidden_dim=256,
-        layer_dim=2,
-    ).to(device)
-
 
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
@@ -140,7 +145,6 @@ def main():
 
     # --- Run Inference ---
     all_logits = []
-    batch_size = ssvep_best_params["batch_size"]
     data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
     with torch.no_grad():
@@ -154,7 +158,7 @@ def main():
     trial_codes = dataset.labels.numpy()
     trial_logits = {}
     for idx, code in enumerate(trial_codes):
-        code = int(code) # Ensure code is a standard integer
+        code = int(code)  # Ensure code is a standard integer
         if code not in trial_logits:
             trial_logits[code] = []
         trial_logits[code].append(all_logits[idx])
@@ -184,16 +188,16 @@ def main():
             weighted_sum_of_logits = torch.sum(logits_tensor * confidences.unsqueeze(1), dim=0)
             sum_of_weights = torch.sum(confidences)
             avg_logits = (weighted_sum_of_logits / sum_of_weights).numpy()
-        
+
         # Get the final prediction
         pred_idx = np.argmax(avg_logits)
         pred_label = decode_label(pred_idx)
-        
+
         subj, sess, trial = position_decode(code)
         csv_id = id_lookup.get((subj, sess, trial))
 
         if csv_id is not None:
-             results.append({"id": csv_id, "label": pred_label})
+            results.append({"id": csv_id, "label": pred_label})
 
     # --- Save to CSV ---
     df = pd.DataFrame(results)
@@ -202,5 +206,5 @@ def main():
     print(f"Saved predictions to {output_csv}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
