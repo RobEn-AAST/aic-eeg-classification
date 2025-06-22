@@ -91,7 +91,7 @@ class SSVEPClassifier(nn.Module):
 
 
 model = SSVEPClassifier(
-    n_electrodes=3,
+    n_electrodes=8,
     dropout=0.33066508963955576,
     kernLength=64,
     F1=8,
@@ -104,13 +104,15 @@ model = SSVEPClassifier(
 batch_size = 64
 window_length = 64 * 4
 stride = window_length // 3
+model_path = "./checkpoints/ssvep/models/ica_ssvep.pth"
+pca_model_path = './checkpoints/ssvep/models/pca.pkl'
+ica_model_path = './checkpoints/ssvep/models/ica.pkl'
 
 def main():
     # --- Config ---
     data_path = "./data/mtcaic3"
     split = "validation"
     task = "SSVEP"
-    model_path = "./checkpoints/ssvep/models/ssvep_3_ch.pth"
     output_csv = "submission.csv"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -134,6 +136,9 @@ def main():
         task=task,
         split=split,
         read_labels=False,
+        ica_model_path=ica_model_path,
+        hardcoded_mean=True,
+        n_components=8
     )
 
     # --- Load Model ---
