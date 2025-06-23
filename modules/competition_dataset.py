@@ -184,7 +184,7 @@ class EEGDataset(Dataset):
             data_array = data_array.reshape(B, T, n_components).transpose(0, 2, 1)  # (B, n_components, T)
 
         self.data = torch.from_numpy(data_array.copy()).to(torch.float32)
-        self.labels = torch.from_numpy(labels_np).to(torch.int32)
+        self.labels = torch.from_numpy(labels_np).to(torch.int64)
         self.trial_ids = trial_ids
 
     def _convert_freq(self, data: np.ndarray):

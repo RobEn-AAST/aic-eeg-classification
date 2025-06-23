@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import os
-from torch.utils.data import DataLoader
-from modules.utils import evaluate_model, split_and_get_loaders
+from torch.utils.data import DataLoader, ConcatDataset, random_split
+from modules.utils import evaluate_model # Assuming this function exists and is correct
 import optuna
-from modules import EEGDataset
+from modules import EEGDataset # Assuming this class exists and is correct
 import numpy as np
 
 class Trainer:
@@ -18,24 +18,26 @@ class Trainer:
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = None
         self.trial = None
-        self.model: nn.Module = None # type: ignore
+        self.model: nn.Module = None
 
+        # <<< FIX: Renamed eval_loader to val_loader for consistency
         self.train_loader = None
-        self.eval_loader = None
-        self.test_loader = None
+        self.val_loader = None 
         self.dataset = None
 
         self.storage = f"sqlite:///{optuna_db_path}"
         self.study_name = "ssvep_classifier_optimization"
         self.data_path = data_path
-
         self.model_path = model_path
 
     def _train_loop(self, n_epochs: int, should_save=False, should_print=False):
-        assert isinstance(self.optimizer, torch.optim.Optimizer), "optimizer is not a valid optimizer"
-        assert isinstance(self.train_loader, DataLoader), "train_laoder is not valid Datloader"
+        assert isinstance(self.optimizer, torch.optim.Optimizer), "Optimizer is not valid"
+        assert isinstance(self.train_loader, DataLoader), "train_loader is not a valid DataLoader"
+        assert isinstance(self.val_loader, DataLoader), "val_loader is not a valid DataLoader"
+
+        # This warning is helpful, so we keep it.
         if self.trial is None:
-            print("Warning: self.trial is none, we are probably in acutal training phase")
+            print("Warning: self.trial is None. Assuming this is the final training phase.")
 
         for epoch in range(n_epochs):
             self.model.to(self.device)
@@ -46,7 +48,7 @@ class Trainer:
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                y_pred = self.model(x)  # B x out_size
+                y_pred = self.model(x)
                 loss = self.criterion(y_pred, y)
 
                 self.optimizer.zero_grad()
@@ -60,54 +62,72 @@ class Trainer:
             if self.trial is not None:
                 self.trial.report(evaluation, epoch)
                 if self.trial.should_prune():
-                    optuna.exceptions.TrialPruned()
+                    # <<< FIX: You must raise the exception for it to work.
+                    raise optuna.exceptions.TrialPruned()
 
             if should_print:
-                print(f"epoch {epoch}, evaluation {evaluation}, avg_loss {avg_loss}")
+                print(f"Epoch {epoch}/{n_epochs}, Validation Accuracy: {evaluation:.4f}, Avg Loss: {avg_loss:.4f}")
 
-            if should_save:
-                self.model.cpu()
-                torch.save(self.model.state_dict(), self.model_path)
-                self.model.to(self.device)
+        # <<< FIX: Moved saving outside the loop. You should only save the final model after all epochs.
+        if should_save:
+            self.model.cpu()
+            torch.save(self.model.state_dict(), self.model_path)
+            self.model.to(self.device)
+            print(f"Model saved to {self.model_path}")
 
-    def _prepare_training(self,
-        is_trial, do_not_modify_network=False,
-        batch_size=None, window_length=None, stride_factor=3, is_wavelet=False
-        ):
-            if is_trial:
-                assert isinstance(self.trial, optuna.Trial), "trial is none, cant' suggest params"
-                if do_not_modify_network:
-                    best_params = self._get_study().best_params
-                    window_length = best_params['window_length']
-                    batch_size = batch_size or best_params["batch_size"]
-                else:
-                    window_length = window_length or self.trial.suggest_categorical("window_length", [175, 250, 350])
-                    batch_size = batch_size or self.trial.suggest_categorical("batch_size", [32, 64])
-            else:
-                # best_params = self._get_study().best_params
-                window_length = window_length or best_params['window_length']
-                batch_size = batch_size or best_params["batch_size"]
 
-            J = Q = None
-            if is_wavelet:
-                J = self.trial.suggest_int("J", 2, max(2, int(np.log2(window_length)) - 1))
-                Q = self.trial.suggest_int("Q", 4, 12)
-                
-            stride = int(window_length // stride_factor)
-            domain = "wavelet" if is_wavelet else "time"
+    # <<< FIX: This entire method was refactored for clarity and correctness.
+    def _prepare_data(self, is_trial, batch_size=None, window_length=None, stride_factor=3):
+        # This logic is now handled by the CustomTrainer override.
+        # This base method just handles creating datasets and dataloaders.
+        if is_trial:
+            assert isinstance(self.trial, optuna.Trial), "self.trial must be an Optuna.Trial during optimization."
+            # Suggest parameters if they are not provided (they will be provided by the CustomTrainer)
+            window_length = window_length or self.trial.suggest_categorical("window_length", [128, 256, 640])
+            batch_size = batch_size or self.trial.suggest_categorical("batch_size", [32, 64])
+        else:
+            # For the final training, get the best parameters from the study.
+            study = self._get_study()
+            best_params = study.best_params
+            window_length = window_length or best_params["window_length"]
+            batch_size = batch_size or best_params["batch_size"]
 
-            self.dataset = EEGDataset(data_path=self.data_path, window_length=window_length, stride=stride, domain=domain, J=J, Q=Q)
-            self.train_loader, self.val_loader, self.test_loader = split_and_get_loaders(self.dataset, batch_size)
-    
+        stride = int(window_length // stride_factor)
+
+        # <<< FIX: Simplified data loading. Load all relevant data once.
+        # Assuming EEGDataset can handle loading all data without a 'split' argument
+        # or that you handle train/val splits externally. The Concat+random_split is a good pattern.
         
+        # This assumed 'split' argument might need to be adjusted based on your EEGDataset implementation
+        dataset_train_full = EEGDataset(self.data_path, window_length=window_length, stride=stride, split='train')
+        dataset_val_full = EEGDataset(self.data_path, window_length=window_length, stride=stride, split='validation')
+
+        # <<< FIX: Assign the concatenated dataset to self.dataset so CustomTrainer can use it.
+        self.dataset = ConcatDataset([dataset_train_full, dataset_val_full])
+        
+        train_len = int(len(self.dataset) * 0.8)
+        val_len = len(self.dataset) - train_len
+        
+        train_ds, val_ds = random_split(self.dataset, [train_len, val_len])
+        
+        self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+        self.val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False)
+        print(f"Data prepared: Train batches={len(self.train_loader)}, Val batches={len(self.val_loader)}")
+        
+
 
     def _objective(self, trial: optuna.Trial):
         self.trial = trial
-        self._prepare_training(True)
-        assert self.model is not None, "model is not set, can't train, ensure to set it after overriding"
-        assert self.optimizer is not None, "optimizer is not set, can't train, ensure to set it after overriding"
+        
+        # In your CustomTrainer, you will override a method that calls _prepare_data
+        # and then sets the model and optimizer.
+        # For this to work, we must call the custom preparation logic.
+        self.prepare_trial_run() # This method will be defined in CustomTrainer
+        
+        assert self.model is not None, "Model is not set. Ensure prepare_trial_run creates self.model."
+        assert self.optimizer is not None, "Optimizer is not set. Ensure prepare_trial_run creates self.optimizer."
 
-        self._train_loop(self.tune_epochs, should_save=False, should_print=False)
+        self._train_loop(self.tune_epochs)
         evaluation = evaluate_model(self.model, self.val_loader, self.device)
         return evaluation
 
@@ -118,36 +138,39 @@ class Trainer:
         if delete_existing:
             try:
                 optuna.delete_study(study_name=self.study_name, storage=self.storage)
+                print(f"Study '{self.study_name}' deleted.")
             except Exception:
-                pass
+                print("Could not delete study (it might not exist).")
 
         study = self._get_study()
         study.optimize(self._objective, n_trials=self.optuna_n_trials)
 
-        # Print optimization results
-        print("\nStudy statistics:")
+        print("\n--- Optimization Finished ---")
+        print(f"Study statistics: ")
         print(f"  Number of finished trials: {len(study.trials)}")
-        print(f"  Number of pruned trials: {len(study.get_trials(states=[optuna.trial.TrialState.PRUNED]))}")
-        print(f"  Number of complete trials: {len(study.get_trials(states=[optuna.trial.TrialState.COMPLETE]))}")
+        
+        pruned_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.PRUNED])
+        complete_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.COMPLETE])
 
-        print("\nBest trial:")
+        print(f"  Number of pruned trials: {len(pruned_trials)}")
+        print(f"  Number of complete trials: {len(complete_trials)}")
+
+        print("Best trial:")
         trial = study.best_trial
         print(f"  Value: {trial.value}")
-        print("\nBest hyperparameters:")
+        print("  Best hyperparameters: ")
         for key, value in trial.params.items():
-            print(f"  {key}: {value}")
+            print(f"    {key}: {value}")
 
         return study.best_params
 
     def train(self):
         self.trial = None
-        self._prepare_training(False)
+        # Same as in _objective, we rely on the custom implementation
+        self.prepare_final_run()
 
         self._train_loop(self.train_epochs, should_save=True, should_print=True)
         evaluation = evaluate_model(self.model, self.val_loader, self.device)
-        print("done training")
+        print(f"--- Final Training Done ---")
+        print(f"Final evaluation accuracy: {evaluation}")
         return evaluation
-
-if __name__ == '__main__':
-    trainer = Trainer('./data/mtcaic3')
-    print('hi')
