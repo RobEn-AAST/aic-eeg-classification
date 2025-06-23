@@ -91,20 +91,20 @@ class SSVEPClassifier(nn.Module):
 
 
 model = SSVEPClassifier(
-    n_electrodes=8,
+    n_electrodes=3,
     dropout=0.33066508963955576,
     kernLength=64,
-    F1=8,
-    D=2,
-    F2=32,
-    hidden_dim=256,
-    layer_dim=2,
+    F1 = 8,
+    D = 2,
+    F2 = 32,
+    hidden_dim=128,
+    layer_dim=1,
 ).to(device)
 
 batch_size = 64
-window_length = 64 * 4
-stride = window_length // 3
-model_path = "./checkpoints/ssvep/models/ica_ssvep.pth"
+window_length = 64 * 5
+stride = window_length // 2
+model_path = "./checkpoints/ssvep/models/pca_ssvep.pth"
 pca_model_path = './checkpoints/ssvep/models/pca.pkl'
 ica_model_path = './checkpoints/ssvep/models/ica.pkl'
 
@@ -136,9 +136,9 @@ def main():
         task=task,
         split=split,
         read_labels=False,
-        ica_model_path=ica_model_path,
+        pca_model_path=pca_model_path,
         hardcoded_mean=True,
-        n_components=8
+        n_components=3
     )
 
     # --- Load Model ---
@@ -172,7 +172,7 @@ def main():
     results = []
     for code in sorted(trial_logits.keys()):
         # Stack all logits for the current trial into a single tensor
-        logits_tensor = torch.from_numpy(np.array(trial_logits[code]))
+        logits_tensor = torch.from_numpy(np.array(trial_logits[code]))[2:3, :]
 
         # If a trial has no valid windows, skip it (edge case)
         if logits_tensor.shape[0] == 0:
