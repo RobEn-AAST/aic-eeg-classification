@@ -19,6 +19,7 @@ class Trainer:
         self.optimizer = None
         self.trial = None
         self.model: nn.Module = None
+        self.scheduler = None
 
         # <<< FIX: Renamed eval_loader to val_loader for consistency
         self.train_loader = None
@@ -65,15 +66,18 @@ class Trainer:
                     # <<< FIX: You must raise the exception for it to work.
                     raise optuna.exceptions.TrialPruned()
 
-            if should_print:
-                print(f"Epoch {epoch}/{n_epochs}, Validation Accuracy: {evaluation:.4f}, Avg Loss: {avg_loss:.4f}")
+            if self.scheduler is not None:
+                self.scheduler.step(evaluation)
 
-        # <<< FIX: Moved saving outside the loop. You should only save the final model after all epochs.
-        if should_save:
-            self.model.cpu()
-            torch.save(self.model.state_dict(), self.model_path)
-            self.model.to(self.device)
-            print(f"Model saved to {self.model_path}")
+            if should_print:
+                print(f"Epoch {epoch}/{n_epochs}, Validation Accuracy: {evaluation:.4f}, Avg Loss: {avg_loss:.4f}, lr: {self.optimizer.param_groups[0]['lr']}")
+
+            # <<< FIX: Moved saving outside the loop. You should only save the final model after all epochs.
+            if should_save and epoch % 5 == 0:
+                self.model.cpu()
+                torch.save(self.model.state_dict(), self.model_path)
+                self.model.to(self.device)
+                print(f"Model saved to {self.model_path}")
 
 
     # <<< FIX: This entire method was refactored for clarity and correctness.
@@ -99,9 +103,25 @@ class Trainer:
         # or that you handle train/val splits externally. The Concat+random_split is a good pattern.
         
         # This assumed 'split' argument might need to be adjusted based on your EEGDataset implementation
-        dataset_train_full = EEGDataset(self.data_path, window_length=window_length, stride=stride, split='train')
-        dataset_val_full = EEGDataset(self.data_path, window_length=window_length, stride=stride, split='validation')
 
+        dataset_train_full = EEGDataset(
+            self.data_path,
+            window_length=window_length,
+            stride=stride,
+            data_fraction=1,
+            hardcoded_mean=True,
+        )
+
+        dataset_val_full = EEGDataset(
+            data_path=self.data_path,
+            window_length=window_length,
+            stride=stride,
+            task='ssvep',
+            split='validation',
+            read_labels=True,
+            hardcoded_mean=True,
+            data_fraction=1
+        )
         # <<< FIX: Assign the concatenated dataset to self.dataset so CustomTrainer can use it.
         self.dataset = ConcatDataset([dataset_train_full, dataset_val_full])
         
@@ -126,15 +146,15 @@ class Trainer:
         
         assert self.model is not None, "Model is not set. Ensure prepare_trial_run creates self.model."
         assert self.optimizer is not None, "Optimizer is not set. Ensure prepare_trial_run creates self.optimizer."
-
-        self._train_loop(self.tune_epochs)
+ 
+        self._train_loop(self.tune_epochs, should_print=False)
         evaluation = evaluate_model(self.model, self.val_loader, self.device)
         return evaluation
 
     def _get_study(self):
         return optuna.create_study(study_name=self.study_name, storage=self.storage, direction="maximize", load_if_exists=True)
 
-    def optimize(self, delete_existing=False):
+    def optimize(self, delete_existing=False, should_print=False):
         if delete_existing:
             try:
                 optuna.delete_study(study_name=self.study_name, storage=self.storage)

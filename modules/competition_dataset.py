@@ -39,8 +39,6 @@ class EEGDataset(Dataset):
         pca_model_path=None,
         ica_model_path=None,
         hardcoded_mean=False,
-        J=None,  # int(np.log2(L)) - 1
-        Q=8,
     ):
         super().__init__()
         assert domain in ("time", "freq", "wavelet")
