@@ -128,16 +128,16 @@ def main():
         key = (str(row["subject_id"]), str(row["trial_session"]), str(row["trial"]))
         id_lookup[key] = row["id"]
 
-    # --- Load Dataset ---
-    dataset = EEGDataset(
+    # --- load dataset ---
+    dataset = eegdataset(
         data_path=data_path,
         window_length=window_length,
         stride=stride,
         task=task,
         split=split,
-        read_labels=False,
+        read_labels=false,
         pca_model_path=pca_model_path,
-        hardcoded_mean=True,
+        hardcoded_mean=true,
         n_components=3
     )
 

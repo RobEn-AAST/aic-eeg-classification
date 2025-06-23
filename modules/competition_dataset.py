@@ -46,16 +46,16 @@ class EEGDataset(Dataset):
         assert domain in ("time", "freq", "wavelet")
         assert 0.0 < data_fraction <= 1.0, "data_fraction must be between 0.0 and 1.0"
 
+        task = task.upper()
         self.domain = domain
         self.window_length = window_length
         self.stride = stride or window_length
-        self.task = task
         self.split = split
         self.read_labels = read_labels
         self.data_fraction = data_fraction
 
-        eeg_channels = ["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"]
-        # eeg_channels = ["CZ", "C4", "C3"]
+        # eeg_channels = ["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"]
+        eeg_channels = ["PO8", "OZ"]
         usecols = eeg_channels + ["Validation"]
 
         # Cache for CSVs
@@ -123,7 +123,6 @@ class EEGDataset(Dataset):
         data_array = np.vstack(windows).astype(np.float32)
         labels_np = np.array(labels, dtype=np.int64)
 
-        # data_array = self._avg_refrencing(data_array) # ! THIS ISN'T EVEN WORKING, IT'S DONE TERRIBLY
         data_array = self._band_pass_filter(data_array)  # this greatly boosted t-sne
 
         if self.domain == "freq":
@@ -141,36 +140,8 @@ class EEGDataset(Dataset):
 
             print(f"mean: {self.mean} \nstd: {self.std}")
         else:
-            self.mean = np.array(
-                [
-                    [
-                        [0.36395702],
-                        [0.55893649],
-                        [-0.1089445],
-                        [-2.02652475],
-                        [-1.31126536],
-                        [-1.19249608],
-                        [-1.21238561],
-                        [-0.99059478],
-                    ]
-                ],
-                dtype=np.float32,
-            )  # Paste your 3D stats here
-            self.std = np.array(
-                [
-                    [
-                        [1418.98024805],
-                        [1367.33219271],
-                        [1823.44475488],
-                        [1631.90382866],
-                        [2130.59165873],
-                        [1026.26568607],
-                        [986.14868789],
-                        [955.25608429],
-                    ]
-                ],
-                dtype=np.float32
-            )
+            self.mean = np.array([-1.6177, -1.9345], dtype=np.float32).reshape(1, -1, 1)
+            self.std = np.array([1039.8375, 1004.1708], dtype=np.float32).reshape(1, -1, 1)
 
             print(f"data shape: {data_array.shape}, mean shape: {self.mean.shape}")
 
@@ -291,17 +262,11 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import time
 
-    TRIAL_LENGTH = 640
-    window_length = 175 * 3
-    stride = window_length // 1
+    window_length = 256
+    stride = window_length // 3
     data_path = "./data/mtcaic3"
     start = time.time()
 
     # IMPORTANT: To get the correct stats for validation, first run with 'train'
     print("--- First, running on training set to calculate stats ---")
-    train_dataset = EEGDataset(data_path, window_length=window_length, stride=stride, task="SSVEP", split="train", read_labels=True, domain="time", ica_model_path="./checkpoints/ssvep/models/ica.pkl")
-    print(f"Calculated Mean:\n{train_dataset.mean}")
-    print(f"Calculated Std:\n{train_dataset.std}")
-    print("\n--- Now you can copy these stats and create the validation set ---")
-
-    print(f"\nTotal time taken: {time.time() - start}")
+    dataset = EEGDataset(data_path=data_path, window_length=window_length, stride=stride, task="ssvep", split="validation", read_labels=True, hardcoded_mean=True, n_components=3)
