@@ -8,10 +8,11 @@ from scipy.fft import fft, rfft
 from scipy import signal
 from numpy.lib.stride_tricks import sliding_window_view
 from kymatio.torch import Scattering1D
-from sklearn.decomposition import PCA, FastICA
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 import joblib
 
-LABELS = ["Backward", "Forward", "Left", "Right"]
+# LABELS = ["Backward", "Forward", "Left", "Right"] # ! FOR SSVEP
+LABELS = ["Left", "Right"]  # ! FOR MI
 LABEL_TO_IDX = {lbl: i for i, lbl in enumerate(LABELS)}
 IDX_TO_LABEL = {idx: label for idx, label in enumerate(LABELS)}
 
@@ -19,7 +20,7 @@ IDX_TO_LABEL = {idx: label for idx, label in enumerate(LABELS)}
 _SFREQ = 256
 _LOW, _HI = 3, 100
 _NYQ = _SFREQ / 2.0
-_B, _A = signal.butter(4, [_LOW / _NYQ, _HI / _NYQ], btype="bandpass")
+_B, _A = signal.butter(4, [_LOW / _NYQ, _HI / _NYQ], btype="bandpass")  # type: ignore
 n_channels = 8
 
 
@@ -36,9 +37,8 @@ class EEGDataset(Dataset):
         read_labels=True,
         data_fraction=1.0,
         n_components=3,
-        pca_model_path=None,
-        ica_model_path=None,
         eeg_channels=["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"],
+        lda_model_path=None,
         hardcoded_mean=False,
     ):
         super().__init__()
@@ -83,10 +83,8 @@ class EEGDataset(Dataset):
         if not isinstance(task_df, pd.DataFrame):
             task_df = pd.DataFrame(task_df)
 
-        # Apply data fraction filtering EARLY - before any CSV reading
         if self.data_fraction < 1.0:
             n_samples = int(len(task_df) * self.data_fraction)
-            # Shuffle and take subset for better distribution
             task_df = task_df.sample(n=n_samples, random_state=42).reset_index(drop=True)
             print(f"Using {self.data_fraction*100:.1f}% of data: {n_samples}/{len(task_df)} samples")
 
@@ -130,7 +128,8 @@ class EEGDataset(Dataset):
             self.mean = np.array([-1.6177, -1.9345], dtype=np.float32).reshape(1, -1, 1)
             self.std = np.array([1039.8375, 1004.1708], dtype=np.float32).reshape(1, -1, 1)
         elif task == "MI":
-            pass
+            self.mean = np.array([0.0002], dtype=np.float32).reshape(1, -1, 1)
+            self.std = np.array([1.0644], dtype=np.float32).reshape(1, -1, 1)
         else:
             raise ValueError(f"Unknown task {task}")
 
@@ -138,42 +137,27 @@ class EEGDataset(Dataset):
             data_array = self._normalize(data_array)
             print(f"data shape: {data_array.shape}, mean shape: {self.mean.shape}")
         else:
-            print('not normalizing...')
+            print("not normalizing...")
 
-        # Modified PCA/ICA logic
-        if pca_model_path is not None and ica_model_path is not None:
-            raise ValueError("Cannot specify both pca_model_path and ica_model_path.")
-        elif pca_model_path is not None:
-            decomposition_method = "pca"
-            model_path = pca_model_path
-        elif ica_model_path is not None:
-            decomposition_method = "ica"
-            model_path = ica_model_path
-        else:
-            decomposition_method = None
-            model_path = ""
-
-        if decomposition_method is not None:
-            print(f"Using {decomposition_method.upper()}")
-            B, C, T = data_array.shape  # (B, C, T)
-            data_array = data_array.reshape(B * T, C)  # (B * T, C)
+        if lda_model_path is not None:
+            print(f"Using LDA")
+            B, C, T = data_array.shape
+            X_all = data_array.transpose(0, 2, 1).reshape(B * T, C)
+            y_all = np.repeat(labels_np, T)
             assert n_components is not None, "n_components must be specified when using decomposition."
 
             if self.split == "train":
-                if decomposition_method == "pca":
-                    self.decomposition_model = PCA(n_components=n_components)
-                elif decomposition_method == "ica":
-                    self.decomposition_model = FastICA(n_components=n_components)
-                self.decomposition_model.fit(data_array)
-                joblib.dump(self.decomposition_model, model_path)
-                print(f"{decomposition_method.upper()} fitted and saved to {model_path}")
+                lda = LDA(n_components=n_components)
+                lda.fit(X_all, y_all)
+                joblib.dump(lda, lda_model_path)
+                print(f"LDA fitted and saved to {lda_model_path}")
             else:
-                if not os.path.exists(model_path):
-                    raise FileNotFoundError(f"Model path {model_path} does not exist. Run training split first.")
-                self.decomposition_model = joblib.load(model_path)
-                print(f"{decomposition_method.upper()} model loaded from {model_path}")
+                if not os.path.exists(lda_model_path):
+                    raise FileNotFoundError(f"Model path {lda_model_path} does not exist. Run training split first.")
+                lda = joblib.load(lda_model_path)
+                print(f"LDA model loaded from {lda_model_path}")
 
-            data_array = self.decomposition_model.transform(data_array)  # (B*T, n_components)
+            data_array = lda.transform(X_all)  # (B*T, n_components)
             data_array = data_array.reshape(B, T, n_components).transpose(0, 2, 1)  # (B, n_components, T)
 
         self.data = torch.from_numpy(data_array.copy()).to(torch.float32)
@@ -181,7 +165,7 @@ class EEGDataset(Dataset):
         self.trial_ids = trial_ids
 
     def _convert_freq(self, data: np.ndarray):
-        data = np.abs(rfft(data, axis=2))
+        data = np.abs(rfft(data, axis=2))  # type:ignore
         return np.log1p(data)
 
     def _avg_refrencing(self, data: np.ndarray):
@@ -238,7 +222,19 @@ if __name__ == "__main__":
     window_length = 256
     stride = window_length // 3
     data_path = "./data/mtcaic3"
+    lda_model_path = "./checkpoints/mi/models/lda_mi.pkl"
     start = time.time()
 
-    dataset = EEGDataset(data_path=data_path, window_length=window_length, stride=stride, task="mi", split="validation", read_labels=True, hardcoded_mean=False, n_components=3)
+    dataset = EEGDataset(
+        data_path=data_path,
+        window_length=window_length,
+        stride=stride,
+        task="mi",
+        split="train",
+        data_fraction=0.3,
+        read_labels=True,
+        hardcoded_mean=False,
+        n_components=1,
+        lda_model_path=lda_model_path,
+    )
     print("done..")
