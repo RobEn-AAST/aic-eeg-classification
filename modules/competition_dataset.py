@@ -161,7 +161,7 @@ class EEGDataset(Dataset):
 
         self.data = torch.from_numpy(data_array.copy()).to(torch.float32)
         self.labels = torch.from_numpy(labels_np).to(torch.int64)
-        if task == "MI":
+        if task == "MI" and self.read_labels:
             self.labels -= 2
         self.trial_ids = trial_ids
 

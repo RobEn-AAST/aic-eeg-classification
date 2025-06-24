@@ -2,7 +2,7 @@
 import pandas as pd
 from sklearn.metrics import accuracy_score
 
-split = "train"
+split = "test"
 PRED_CSV = "./submission.csv"
 TRUE_CSV = f"./data/mtcaic3/{split}.csv"
 

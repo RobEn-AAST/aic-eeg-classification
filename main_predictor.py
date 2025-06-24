@@ -5,7 +5,7 @@ from modules.competition_dataset import EEGDataset, decode_label, position_decod
 from Models import get_mi_model, get_ssvep_model
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-split = "train"
+split = "validation"
 data_path = "./data/mtcaic3"
 batch_size = 64
 window_length = 256
@@ -15,7 +15,7 @@ confidence_exponent = 2.0
 # define your two models
 models = {
     "SSVEP": {"builder": get_ssvep_model, "ckpt": "./checkpoints/ssvep/models/ssvep_PO8_OZ_PZ.pth", "channels": ["PO8", "OZ", "PZ"]},
-    "MI": {"builder": get_mi_model, "ckpt": "./checkpoints/mi/models/the_honored_one.pth", "channels": ["C3", "PZ", "OZ"]},
+    "MI": {"builder": get_mi_model, "ckpt": "./checkpoints/mi/models/the_honored_one.pth", "channels": ["C3", "PZ", "C4"]},
 }
 
 
@@ -54,6 +54,8 @@ def run_task(task, lookup, results, split=split):
         csv_id = lookup.get(key)
         if csv_id is not None:
             results.append({"id": csv_id, "label": pred})
+        else:
+            raise ValueError(f"{key} IS NOT FOUND: {csv_id}")
 
 
 if __name__ == "__main__":
