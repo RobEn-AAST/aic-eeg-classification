@@ -38,11 +38,13 @@ class EEGDataset(Dataset):
         n_components=3,
         pca_model_path=None,
         ica_model_path=None,
+        eeg_channels=["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"],
         hardcoded_mean=False,
     ):
         super().__init__()
-        assert domain in ("time", "freq", "wavelet")
+        assert domain in ("time", "freq")
         assert 0.0 < data_fraction <= 1.0, "data_fraction must be between 0.0 and 1.0"
+        print(f"task: {task}, split: {split}, domain: {domain}, data_fraction: {data_fraction}")
 
         task = task.upper()
         self.domain = domain
@@ -52,8 +54,6 @@ class EEGDataset(Dataset):
         self.read_labels = read_labels
         self.data_fraction = data_fraction
 
-        # eeg_channels = ["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"]
-        eeg_channels = ["PO8", "OZ"]
         usecols = eeg_channels + ["Validation"]
 
         # Cache for CSVs
@@ -125,25 +125,20 @@ class EEGDataset(Dataset):
 
         if self.domain == "freq":
             data_array = self._convert_freq(data_array)
-        elif self.domain == "wavelet":
-            data_array = self._convert_wavelet_fast(data_array)
 
-        if not hardcoded_mean:
-            if self.domain == "wavelet":
-                print("Calculating new normalization stats for WAVELET data...")
-                self.mean, self.std = self._get_normalization_stats_wavelet(data_array)
-            else:
-                print("Calculating new normalization stats for TIME/FREQ data...")
-                self.mean, self.std = self._get_normalization_stats_3d(data_array)
-
-            print(f"mean: {self.mean} \nstd: {self.std}")
-        else:
+        if task == "SSVEP":
             self.mean = np.array([-1.6177, -1.9345], dtype=np.float32).reshape(1, -1, 1)
             self.std = np.array([1039.8375, 1004.1708], dtype=np.float32).reshape(1, -1, 1)
+        elif task == "MI":
+            pass
+        else:
+            raise ValueError(f"Unknown task {task}")
 
+        if hardcoded_mean:
+            data_array = self._normalize(data_array)
             print(f"data shape: {data_array.shape}, mean shape: {self.mean.shape}")
-
-        data_array = self._normalize(data_array)
+        else:
+            print('not normalizing...')
 
         # Modified PCA/ICA logic
         if pca_model_path is not None and ica_model_path is not None:
@@ -189,20 +184,6 @@ class EEGDataset(Dataset):
         data = np.abs(rfft(data, axis=2))
         return np.log1p(data)
 
-    def _convert_wavelet_fast(self, data: np.ndarray):
-        B, C, L = data.shape
-        data_tensor = torch.from_numpy(data.copy()).to(torch.float32)
-
-        print(f"Window length (L) is {L}. Calculated a safe J = {self.J}, Q = {self.Q}.")
-        data_reshaped = data_tensor.reshape(B * C, L)
-        scattering = Scattering1D(J=self.J, shape=(L,), Q=self.Q)
-        with torch.no_grad():
-            coeffs = scattering(data_reshaped)
-        _, n_coeffs, n_time_bins = coeffs.shape
-        coeffs_reshaped = coeffs.reshape(B, C, n_coeffs, n_time_bins)
-        print("Transform complete.")
-        return coeffs_reshaped.numpy()
-
     def _avg_refrencing(self, data: np.ndarray):
         return data - data.mean(axis=2, keepdims=True)
 
@@ -214,12 +195,6 @@ class EEGDataset(Dataset):
         mean = data.mean(axis=(0, 2), keepdims=True)
         std = data.std(axis=(0, 2), keepdims=True) + 1e-6
         print(f"New 3D stats calculated. Mean shape: {mean.shape}")
-        return mean, std
-
-    def _get_normalization_stats_wavelet(self, data: np.ndarray):
-        mean = data.mean(axis=(0, 3), keepdims=True)
-        std = data.std(axis=(0, 3), keepdims=True) + 1e-6
-        print(f"New 4D stats calculated. Mean shape: {mean.shape}")
         return mean, std
 
     def _normalize(self, data: np.ndarray):
@@ -265,6 +240,5 @@ if __name__ == "__main__":
     data_path = "./data/mtcaic3"
     start = time.time()
 
-    # IMPORTANT: To get the correct stats for validation, first run with 'train'
-    print("--- First, running on training set to calculate stats ---")
-    dataset = EEGDataset(data_path=data_path, window_length=window_length, stride=stride, task="ssvep", split="validation", read_labels=True, hardcoded_mean=True, n_components=3)
+    dataset = EEGDataset(data_path=data_path, window_length=window_length, stride=stride, task="mi", split="validation", read_labels=True, hardcoded_mean=False, n_components=3)
+    print("done..")

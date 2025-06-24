@@ -17,4 +17,6 @@ Epileptic Seizures)
 https://paperswithcode.com/paper/a-transformer-based-deep-neural-network-model (transformer based ssvep classification)
 
 
-lstm params: [I 2025-06-18 04:01:38,445] Trial 12 finished with value: 0.65625 and parameters: {'n_electrodes': 32, 'n_samples': 256, 'dropout': 0.33066508963955576, 'kernLength': 256, 'F1': 128, 'D': 2, 'F2': 96, 'hidden_dim': 256, 'layer_dim': 3, 'window_length': 160, 'stride': 3, 'lr': 0.00030241790493218325, 'batch_size': 64}. Best is trial 12 with value: 0.65625.
+ssvep_honored_one params:
+channels: eeg_channels = ["PO8", "OZ"]
+[I 2025-06-23 21:39:53,896] Trial 36 finished with value: 0.5896541702993315 and parameters: {'window_length': 256, 'batch_size': 64, 'kernLength': 256, 'F1': 16, 'D': 3, 'F2': 64, 'hidden_dim': 64, 'layer_dim': 1, 'dropout': 0.10328170267309397, 'lr': 0.0018182233882257615}. Best is trial 36 with value: 0.5896541702993315.
