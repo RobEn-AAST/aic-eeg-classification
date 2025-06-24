@@ -20,3 +20,10 @@ https://paperswithcode.com/paper/a-transformer-based-deep-neural-network-model (
 ssvep_PO8_OZ_PZ params: 50 epoch test tuner
 channels: eeg_channels = ["PO8", "OZ", "PZ"]
 [I 2025-06-23 23:33:32,774] Trial 17 finished with value: 0.7183263207106124 and parameters: {'window_length': 256, 'batch_size': 64, 'kernLength': 256, 'F1': 32, 'D': 3, 'F2': 32, 'hidden_dim': 256, 'layer_dim': 3, 'dropout': 0.26211635308091535, 'lr': 0.0003746351873334935}. Best is trial 17 with value: 0.7183263207106124.
+
+
+
+SITE THIS:
+Compact convolutional transformer
+for subject‑independent motor
+imagery EEG‑based BCIs

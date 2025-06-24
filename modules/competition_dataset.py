@@ -4,10 +4,9 @@ import os
 import numpy as np
 import pandas as pd
 import torch
-from scipy.fft import fft, rfft
+from scipy.fft import rfft
 from scipy import signal
 from numpy.lib.stride_tricks import sliding_window_view
-from kymatio.torch import Scattering1D
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 import joblib
 

@@ -5,19 +5,18 @@ from modules.competition_dataset import EEGDataset, decode_label, position_decod
 from Models import get_mi_model, get_ssvep_model
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-split = "validation"
+split = "test"
 data_path = "./data/mtcaic3"
 batch_size = 64
 window_length = 256
 stride = window_length // 3
-confidence_exponent = 2.0
+confidence_exponent = 3.0
 
 # define your two models
 models = {
     "SSVEP": {"builder": get_ssvep_model, "ckpt": "./checkpoints/ssvep/models/ssvep_PO8_OZ_PZ.pth", "channels": ["PO8", "OZ", "PZ"]},
     "MI": {"builder": get_mi_model, "ckpt": "./checkpoints/mi/models/the_honored_one.pth", "channels": ["C3", "PZ", "C4"]},
 }
-
 
 def run_task(task, lookup, results, split=split):
     """Run inference for a single task, append to results."""
@@ -40,13 +39,16 @@ def run_task(task, lookup, results, split=split):
     for code in sorted(set(codes)):
         inds = np.where(codes == code)[0]
         # take the 3rd window only (as before)
-        wins = torch.from_numpy(np.stack([all_logits[i] for i in inds])[2:3])
+        wins = torch.from_numpy(np.stack([all_logits[i] for i in inds]))
         if wins.numel() == 0:
             continue
 
         probs = F.softmax(wins, dim=1)
-        conf = probs.max(1).values ** confidence_exponent
-        avg = (wins * conf.unsqueeze(1)).sum(0) / (conf.sum() or 1)
+        conf  = probs.max(1).values ** confidence_exponent
+        if conf.sum() == 0:
+            avg = wins.mean(0)
+        else:
+            avg = (wins * conf.unsqueeze(1)).sum(0) / conf.sum()
         pred = decode_label(int(avg.argmax()), task)
 
         subj, sess, trial = position_decode(int(code))
