@@ -53,7 +53,7 @@ class EEGDataset(Dataset):
         self.data_fraction = data_fraction
 
         # eeg_channels = ["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"]
-        eeg_channels = ["PO8", "OZ"]
+        eeg_channels = ["PO8", "OZ", "PZ"]
         usecols = eeg_channels + ["Validation"]
 
         # Cache for CSVs
@@ -138,9 +138,14 @@ class EEGDataset(Dataset):
 
             print(f"mean: {self.mean} \nstd: {self.std}")
         else:
-            self.mean = np.array([-1.6177, -1.9345], dtype=np.float32).reshape(1, -1, 1)
-            self.std = np.array([1039.8375, 1004.1708], dtype=np.float32).reshape(1, -1, 1)
+            # PO8, OZ
+            # self.mean = np.array([-1.6177, -1.9345], dtype=np.float32).reshape(1, -1, 1)
+            # self.std = np.array([1039.8375, 1004.1708], dtype=np.float32).reshape(1, -1, 1)
 
+            # PO8, OZ, PZ
+            self.mean = np.array([-1.0309, -0.4789, -0.6384], dtype=np.float32).reshape(1, -1, 1)
+            self.std = np.array([2178.9883, 1022.6290,  977.3783], dtype=np.float32).reshape(1, -1, 1)
+            
             print(f"data shape: {data_array.shape}, mean shape: {self.mean.shape}")
 
         data_array = self._normalize(data_array)

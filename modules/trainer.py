@@ -8,7 +8,7 @@ from modules import EEGDataset # Assuming this class exists and is correct
 import numpy as np
 
 class Trainer:
-    def __init__(self, data_path, optuna_db_path, model_path, train_epochs=1000, tune_epochs=30, optuna_n_trials=120):
+    def __init__(self, data_path, optuna_db_path, model_path, train_epochs=1000, tune_epochs=30, optuna_n_trials=120, data_fraction=1):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.train_epochs = train_epochs
@@ -25,6 +25,7 @@ class Trainer:
         self.train_loader = None
         self.val_loader = None 
         self.dataset = None
+        self.data_fraction = data_fraction
 
         self.storage = f"sqlite:///{optuna_db_path}"
         self.study_name = "ssvep_classifier_optimization"
@@ -108,7 +109,7 @@ class Trainer:
             self.data_path,
             window_length=window_length,
             stride=stride,
-            data_fraction=1,
+            data_fraction=self.data_fraction,
             hardcoded_mean=True,
         )
 
