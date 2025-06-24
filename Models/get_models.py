@@ -8,7 +8,7 @@ def get_ssvep_model():
         kernLength=256,
         F1 = 32,
         D = 3,
-        F2 = 32,
+        F2 = 96,
         hidden_dim=256,
         layer_dim=3,
     )

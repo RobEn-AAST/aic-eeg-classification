@@ -127,8 +127,8 @@ class EEGDataset(Dataset):
             self.mean = np.array([-1.0309, -0.4789, -0.6384], dtype=np.float32).reshape(1, -1, 1)
             self.std = np.array([2178.9883, 1022.6290,  977.3783], dtype=np.float32).reshape(1, -1, 1)
         elif task == "MI":
-            self.mean = np.array([-1.8794, -5.1054, -2.0616], dtype=np.float32).reshape(1, -1, 1)
-            self.std = np.array([1745.9202, 2298.0815, 1412.2756], dtype=np.float32).reshape(1, -1, 1)
+            self.mean = np.array([-1.8794, -1.6775, -5.1054], dtype=np.float32).reshape(1, -1, 1)
+            self.std = np.array([1745.9202, 2063.0957, 2298.0815], dtype=np.float32).reshape(1, -1, 1)
         else:
             raise ValueError(f"Unknown task {task}")
 
@@ -193,7 +193,9 @@ class EEGDataset(Dataset):
 
 
 # ... (rest of the file, including decode_label, etc.)
-def decode_label(idx):
+def decode_label(idx, task):
+    if task.upper() == "MI":
+        idx += 2
     return IDX_TO_LABEL[int(idx)]
 
 
