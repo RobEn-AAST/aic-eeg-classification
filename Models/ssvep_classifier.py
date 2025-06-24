@@ -4,10 +4,10 @@ from .convolution import DepthWiseConv2D, SeperableConv2D
 from .lstm import LSTMModel
 
 
-class SSVEPClassifier(nn.Module):
+class Classifier(nn.Module):
     # EEG Net Based
     # todo look at this https://paperswithcode.com/paper/a-transformer-based-deep-neural-network-model
-    def __init__(self, n_electrodes=16, n_samples=128, out_dim=4, dropout=0.25, kernLength=256, F1=96, D=1, F2=96, hidden_dim=100, layer_dim=1):
+    def __init__(self, n_electrodes=16, out_dim=4, dropout=0.25, kernLength=256, F1=96, D=1, F2=96, hidden_dim=100, layer_dim=1):
         super().__init__()
 
         # B x C x T
@@ -24,7 +24,7 @@ class SSVEPClassifier(nn.Module):
             SeperableConv2D(F1 * D, F2, kernel_size=(1, 16), padding="same", bias=False),
             nn.BatchNorm2d(F2),
             nn.ELU(),
-            nn.MaxPool2d((1, 4)),
+            nn.MaxPool2d((1, 2)),
             nn.Dropout(dropout),
         )
 
@@ -43,7 +43,7 @@ class SSVEPClassifier(nn.Module):
 
 
 if __name__ == "__main__":
-    model = SSVEPClassifier()
+    model = Classifier()
     print(model)
     x = torch.randn(32, 16, 128)  # Batch size of 32, 16 electrodes, 128 time points
     output = model(x)
