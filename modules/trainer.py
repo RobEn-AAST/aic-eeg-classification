@@ -8,12 +8,14 @@ from modules import EEGDataset # Assuming this class exists and is correct
 import numpy as np
 
 class Trainer:
-    def __init__(self, data_path, optuna_db_path, model_path, train_epochs=1000, tune_epochs=30, optuna_n_trials=120, data_fraction=1):
+    def __init__(self, data_path, optuna_db_path, model_path, task, eeg_channels, train_epochs=1000, tune_epochs=30, optuna_n_trials=120, data_fraction=1):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.train_epochs = train_epochs
         self.tune_epochs = tune_epochs
         self.optuna_n_trials = optuna_n_trials
+        self.task = task
+        self.eeg_channels = eeg_channels
 
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = None
@@ -28,7 +30,7 @@ class Trainer:
         self.data_fraction = data_fraction
 
         self.storage = f"sqlite:///{optuna_db_path}"
-        self.study_name = "ssvep_classifier_optimization"
+        self.study_name = f"{task}_classifier_optimization"
         self.data_path = data_path
         self.model_path = model_path
 
@@ -111,17 +113,19 @@ class Trainer:
             stride=stride,
             data_fraction=self.data_fraction,
             hardcoded_mean=True,
+            task=self.task,
+            eeg_channels = self.eeg_channels
         )
 
         dataset_val_full = EEGDataset(
             data_path=self.data_path,
             window_length=window_length,
             stride=stride,
-            task='ssvep',
+            task=self.task,
             split='validation',
             read_labels=True,
             hardcoded_mean=True,
-            data_fraction=1
+            eeg_channels=self.eeg_channels
         )
         # <<< FIX: Assign the concatenated dataset to self.dataset so CustomTrainer can use it.
         self.dataset = ConcatDataset([dataset_train_full, dataset_val_full])
@@ -148,7 +152,7 @@ class Trainer:
         assert self.model is not None, "Model is not set. Ensure prepare_trial_run creates self.model."
         assert self.optimizer is not None, "Optimizer is not set. Ensure prepare_trial_run creates self.optimizer."
  
-        self._train_loop(self.tune_epochs, should_print=False)
+        self._train_loop(self.tune_epochs, should_print=True)
         evaluation = evaluate_model(self.model, self.val_loader, self.device)
         return evaluation
 
@@ -189,7 +193,8 @@ class Trainer:
         self.trial = None
         # Same as in _objective, we rely on the custom implementation
         self.prepare_final_run()
-
+        
+        self.data_fraction = 1
         self._train_loop(self.train_epochs, should_save=True, should_print=True)
         evaluation = evaluate_model(self.model, self.val_loader, self.device)
         print(f"--- Final Training Done ---")

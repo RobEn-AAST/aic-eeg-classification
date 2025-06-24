@@ -124,11 +124,11 @@ class EEGDataset(Dataset):
             data_array = self._convert_freq(data_array)
 
         if task == "SSVEP":
-            self.mean = np.array([-1.6177, -1.9345], dtype=np.float32).reshape(1, -1, 1)
-            self.std = np.array([1039.8375, 1004.1708], dtype=np.float32).reshape(1, -1, 1)
+            self.mean = np.array([-1.0309, -0.4789, -0.6384], dtype=np.float32).reshape(1, -1, 1)
+            self.std = np.array([2178.9883, 1022.6290,  977.3783], dtype=np.float32).reshape(1, -1, 1)
         elif task == "MI":
-            self.mean = np.array([0.0002], dtype=np.float32).reshape(1, -1, 1)
-            self.std = np.array([1.0644], dtype=np.float32).reshape(1, -1, 1)
+            self.mean = np.array([-1.8794, -5.1054, -2.0616], dtype=np.float32).reshape(1, -1, 1)
+            self.std = np.array([1745.9202, 2298.0815, 1412.2756], dtype=np.float32).reshape(1, -1, 1)
         else:
             raise ValueError(f"Unknown task {task}")
 
