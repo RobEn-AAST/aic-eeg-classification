@@ -11,8 +11,7 @@ from kymatio.torch import Scattering1D
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 import joblib
 
-# LABELS = ["Backward", "Forward", "Left", "Right"] # ! FOR SSVEP
-LABELS = ["Left", "Right"]  # ! FOR MI
+LABELS = ["Backward", "Forward", "Left", "Right"] # ! FOR SSVEP
 LABEL_TO_IDX = {lbl: i for i, lbl in enumerate(LABELS)}
 IDX_TO_LABEL = {idx: label for idx, label in enumerate(LABELS)}
 
@@ -162,6 +161,8 @@ class EEGDataset(Dataset):
 
         self.data = torch.from_numpy(data_array.copy()).to(torch.float32)
         self.labels = torch.from_numpy(labels_np).to(torch.int64)
+        if task == "MI":
+            self.labels -= 2
         self.trial_ids = trial_ids
 
     def _convert_freq(self, data: np.ndarray):
