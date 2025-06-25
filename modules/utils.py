@@ -16,24 +16,50 @@ def get_closest_divisor(target: int, n=1750):
 
 
 def evaluate_model(model: nn.Module, data_loader: DataLoader, device):
+    """
+    Evaluates both label and subject prediction accuracy.
+    Assumes:
+      - Dataset __getitem__ returns (x, y) where y is a tensor of shape (B, 2):
+          y[:, 0] = true labels
+          y[:, 1] = true subject IDs
+      - model(x) returns a tuple: (label_logits, subject_logits)
+    """
     model.eval()
     model.to(device)
-    all_preds = []
-    all_labels = []
+
+    all_label_preds = []
+    all_label_trues = []
+    all_subj_preds = []
+    all_subj_trues = []
 
     with torch.no_grad():
         for x, y in data_loader:
             x = x.to(device)
             y = y.to(device)
 
-            outputs = model(x)
-            _, predicted = torch.max(outputs.data, 1)
+            # split ground truth
+            y_label = y[:, 0]
+            y_subject = y[:, 1]
 
-            all_preds.extend(predicted.cpu().numpy())
-            all_labels.extend(y.cpu().numpy())
+            # forward pass: two heads
+            label_logits, subject_logits = model(x)
 
-    accuracy = accuracy_score(all_labels, all_preds)
-    return float(accuracy)
+            # predictions
+            _, label_pred = torch.max(label_logits, dim=1)
+            _, subject_pred = torch.max(subject_logits, dim=1)
+
+            # collect on CPU
+            all_label_preds.extend(label_pred.cpu().numpy())
+            all_label_trues.extend(y_label.cpu().numpy())
+            all_subj_preds.extend(subject_pred.cpu().numpy())
+            all_subj_trues.extend(y_subject.cpu().numpy())
+
+    # compute accuracies
+    label_accuracy = accuracy_score(all_label_trues, all_label_preds)
+    subject_accuracy = accuracy_score(all_subj_trues, all_subj_preds)
+
+    return float(label_accuracy), float(subject_accuracy)
+
 
 
 def split_and_get_loaders(dataset: Dataset, batch_size: int, train_size: float = 0.8):

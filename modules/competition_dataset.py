@@ -59,6 +59,7 @@ class EEGDataset(Dataset):
         file_cache = {}
         windows = []
         labels = []
+        subjects = []
         trial_ids = []
 
         if read_labels:
@@ -109,14 +110,23 @@ class EEGDataset(Dataset):
             all_wins = sliding_window_view(T, self.window_length, axis=1)[:, :: self.stride, :]
             W = all_wins.transpose(1, 0, 2)
             windows.append(W)
+            n_wins = W.shape[0]
             if read_labels:
-                labels.extend([LABEL_TO_IDX[row.label]] * W.shape[0])
+                labels.extend([LABEL_TO_IDX[row.label]] * n_wins)
             else:
-                labels.extend([position_encode(subj, sess, trial)] * W.shape[0])
+                labels.extend([position_encode(subj, sess, trial)] * n_wins)
+            # Track subject index (as int, e.g. S3 -> 3, then -1 for 0-based)
+            try:
+                subject_num = int(subj[1:])
+            except:
+                subject_num = int(subj)
+            subject_num -= 1  # Ensure zero-based
+            subjects.extend([subject_num] * n_wins)
 
         print(f"skipped: {skipped_shit}/{total_stuff}")
         data_array = np.vstack(windows).astype(np.float32)
         labels_np = np.array(labels, dtype=np.int64)
+        subjects_np = np.array(subjects, dtype=np.int64)
 
         data_array = self._band_pass_filter(data_array)  # this greatly boosted t-sne
 
@@ -160,10 +170,14 @@ class EEGDataset(Dataset):
             data_array = data_array.reshape(B, T, n_components).transpose(0, 2, 1)  # (B, n_components, T)
 
         self.data = torch.from_numpy(data_array.copy()).to(torch.float32)
+        # ...after any label/subject postprocessing...
         self.labels = torch.from_numpy(labels_np).to(torch.int64)
+        self.subjects = torch.from_numpy(subjects_np).to(torch.int64)
         if task == "MI" and self.read_labels:
             self.labels -= 2
         self.trial_ids = trial_ids
+        # Combine labels and subjects into (B, 2)
+        self.classes = torch.stack((self.labels, self.subjects), dim=1)
 
     def _convert_freq(self, data: np.ndarray):
         data = np.abs(rfft(data, axis=2))  # type:ignore
@@ -186,7 +200,7 @@ class EEGDataset(Dataset):
         return (data - self.mean) / self.std
 
     def __getitem__(self, idx):
-        return self.data[idx], self.labels[idx]
+        return self.data[idx], self.classes[idx]
 
     def __len__(self):
         return len(self.data)
