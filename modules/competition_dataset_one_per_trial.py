@@ -24,18 +24,15 @@ LABEL_TO_IDX = {lbl: i for i, lbl in enumerate(LABELS)}
 IDX_TO_LABEL = {i: lbl for i, lbl in enumerate(LABELS)}
 
 _SFREQ = 250
-_B, _A = butter(4, [3 / _SFREQ * 2, 100 / _SFREQ * 2], btype="bandpass") # type: ignore
+_B, _A = butter(4, [3 / _SFREQ * 2, 100 / _SFREQ * 2], btype="bandpass")  # type: ignore
 n_channels = 8
 
 # encode/decode for unlabeled mode
-
-
 def position_encode(subj, sess, trial):
     subj_idx = int(subj[1:]) - 1
     sess_idx = int(sess) - 1
     trial_idx = int(trial) - 1
     return (subj_idx * n_channels + sess_idx) * 10 + trial_idx
-
 
 def position_decode(code):
     trial_idx = code % 10
@@ -43,7 +40,6 @@ def position_decode(code):
     sess_idx = code % n_channels
     subj_idx = code // n_channels
     return f"S{subj_idx+1}", str(sess_idx + 1), str(trial_idx + 1)
-
 
 class EEGDataset(Dataset):
     def __init__(
@@ -58,14 +54,18 @@ class EEGDataset(Dataset):
         lda_n_components=3,
         n_csp=4,
         checkpoints_dir="./checkpoints/",
-        eeg_channels = None,
+        eeg_channels=None,
     ):
         super().__init__()
         task = task.upper()
         self.tmin = int(tmin * _SFREQ)
         default_sizes = {"SSVEP": int(2.0 * _SFREQ), "MI": int(4.5 * _SFREQ)}
         self.win_len = win_len or default_sizes.get(task, int(1.0 * _SFREQ))
-        self.channels = ["C3", "PZ", "C4", "OZ", "PO7", "PO8", "CZ", "FZ"] if eeg_channels is None else eeg_channels
+        self.channels = (
+            ["C3", "PZ", "C4", "OZ", "PO7", "PO8", "CZ", "FZ"]
+            if eeg_channels is None
+            else eeg_channels
+        )
 
         self.read_labels = read_labels
         self.lda_n_components = lda_n_components
@@ -85,7 +85,10 @@ class EEGDataset(Dataset):
             if data_fraction < 1.0:
                 meta = meta.sample(frac=data_fraction, random_state=42)
             meta = meta.reset_index(drop=True)
-            trials = [(row.subject_id, row.trial_session, row.trial, row.label) for row in meta.itertuples()]
+            trials = [
+                (row.subject_id, row.trial_session, row.trial, row.label)
+                for row in meta.itertuples()
+            ]
         else:
             trials = []
             base = os.path.join(data_path, task, split)
@@ -101,13 +104,23 @@ class EEGDataset(Dataset):
                         trials.append((subj, sess, trial, None))
             if data_fraction < 1.0:
                 rng = np.random.default_rng(42)
-                trials = list(rng.choice(trials, size=int(len(trials) * data_fraction), replace=False))
+                trials = list(
+                    rng.choice(trials, size=int(len(trials) * data_fraction), replace=False)
+                )
 
         # cache and load
         eeg_cache = {}
-        data_list, label_list = [], []
+        data_list, label_list, subject_list = [], [], []
         self.trial_ids = []
+
         for subj, sess, trial, label in trials:
+            # capture subject index once at load time
+            try:
+                subject_num = int(subj[1:])  # e.g. 'S3' -> 3
+            except:
+                subject_num = int(subj)
+            subject_list.append(subject_num)
+
             key = (subj, sess)
             if key not in eeg_cache:
                 fp = os.path.join(data_path, task, split, subj, str(sess), "EEGdata.csv")
@@ -115,13 +128,15 @@ class EEGDataset(Dataset):
                 valid = raw[raw[:, -1] == 1, :-1].T.astype(np.float32)
                 eeg_cache[key] = filtfilt(_B, _A, valid, axis=1)
             valid = eeg_cache[key]
-            # extract
+
+            # extract window
             s, e = self.tmin, self.tmin + self.win_len
             seg = valid[:, s:e]
             if seg.shape[1] < self.win_len:
                 pad = np.zeros((valid.shape[0], self.win_len - seg.shape[1]), dtype=np.float32)
                 seg = np.concatenate([seg, pad], axis=1)
             data_list.append(seg)
+
             if read_labels:
                 idx = LABEL_TO_IDX[label]
             else:
@@ -130,18 +145,23 @@ class EEGDataset(Dataset):
                 self.trial_ids.append(code)
             label_list.append(idx)
 
+        # stack and transform
         X_np = np.stack(data_list)  # BxCxT
-
         X_np = self.apply_car(X_np)
         freqs = np.linspace(8, 32, 40)
-        X_np = self.apply_cwt(X_np, _SFREQ, freqs=freqs) # (B, C, len(freqs), T)
-        # X_np = self._normalize_signal(X_np, self.signal_scalar_path)
+        X_np = self.apply_cwt(X_np, _SFREQ, freqs=freqs)  # (B, C, len(freqs), T)
 
-        # finalize
-        self.data = torch.tensor(X_np, dtype=torch.float32)
-        self.labels = torch.tensor(label_list, dtype=torch.long)
-        print(f"data shape: {self.data.shape}, label shape: {self.labels.shape}")
-    
+        # finalize tensors
+        self.data = torch.tensor(X_np, dtype=torch.float32)               # (B, C, F, T)
+        self.labels = torch.tensor(label_list, dtype=torch.long)         # (B,)
+        self.subjects = torch.tensor(subject_list, dtype=torch.long)     # (B,)
+        # now pack into (B,2): first column = label, second = subject ID
+        self.classes = torch.stack((self.labels, self.subjects), dim=1)  # (B,2)
+
+        print(
+            f"data shape: {self.data.shape}, classes shape: {self.classes.shape}"
+        )
+
     def apply_car(self, X: np.ndarray) -> np.ndarray:
         """
         Common Average Reference: subtract at each time‐point the mean across channels.
@@ -153,11 +173,9 @@ class EEGDataset(Dataset):
             joblib.dump(car_transformer, self.car_transformer_path)
         else:
             car_transformer = joblib.load(self.car_transformer_path)
-            
-            
-        X = np.asarray(car_transformer.transform(X))  # (B, C, T)
-        return X
-        
+
+        return np.asarray(car_transformer.transform(X))
+
     def apply_cwt(self, X: np.ndarray, sfreq: int, freqs: np.ndarray) -> np.ndarray:
         """
         Continuous Wavelet Transform per channel.
@@ -166,19 +184,16 @@ class EEGDataset(Dataset):
         freqs: array of desired output frequencies (e.g. np.linspace(8,32,40))
         returns: (B, C, len(freqs), T) scalogram magnitudes
         """
-        # compute scales for Morlet wavelet
-        center_freq = pywt.central_frequency('morl')
+        center_freq = pywt.central_frequency("morl")
         scales = center_freq * sfreq / freqs
         B, C, T = X.shape
         tf_images = np.zeros((B, C, len(freqs), T), dtype=np.float32)
         for b in range(B):
             for c in range(C):
-                coef, _ = pywt.cwt(X[b, c], scales, 'morl', sampling_period=1/sfreq)
+                coef, _ = pywt.cwt(X[b, c], scales, "morl", sampling_period=1 / sfreq)
                 tf_images[b, c] = np.abs(coef)
         return tf_images
 
-
-    
     def apply_csp(self, X: np.ndarray, y: np.ndarray):
         if self.split == "train":
             csp = CSP(n_components=self.n_csp, reg="ledoit_wolf", log=None, transform_into="csp_space")
@@ -204,10 +219,11 @@ class EEGDataset(Dataset):
         return X_norm
 
     def __len__(self):
-        return len(self.labels)
+        return len(self.classes)
 
     def __getitem__(self, i):
-        return self.data[i], self.labels[i]
+        # returns (data, [label, subject_id])
+        return self.data[i], self.classes[i]
 
 
 # decode helper

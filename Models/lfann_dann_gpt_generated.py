@@ -100,7 +100,7 @@ class LFANN_DANN(nn.Module):
                  kernel_t=64,
                  num_classes=2,
                  reduction=16,
-                 domain_classes=2):
+                 domain_classes=30):
         super(LFANN_DANN, self).__init__()
         # Shared feature extractor
         self.conv_t = nn.Sequential(
