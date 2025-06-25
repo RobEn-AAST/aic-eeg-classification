@@ -208,17 +208,37 @@ class EEGDataset(Dataset):
         return X_filt
 
     def _normalize_signal(self, X_raw: np.ndarray, scalar_path: str):
-        flat = X_raw.transpose(0, 2, 1).reshape(-1, self.n_channels)  # B*T, C
-        if self.split == "train":
-            scalar = StandardScaler().fit(flat)
-            joblib.dump(scalar, scalar_path)
+        """
+        Normalize signal for both (B, C, T) and (B, C, F, T) shapes.
+        For (B, C, T): normalize across (B*T, C).
+        For (B, C, F, T): normalize across (B*F*T, C).
+        """
+        if X_raw.ndim == 3:
+            # (B, C, T)
+            B, C, T = X_raw.shape
+            flat = X_raw.transpose(0, 2, 1).reshape(-1, C)  # (B*T, C)
+            if self.split == "train":
+                scalar = StandardScaler().fit(flat)
+                joblib.dump(scalar, scalar_path)
+            else:
+                scalar = joblib.load(scalar_path)
+            X_norm = scalar.transform(flat)
+            X_norm = X_norm.reshape(B, T, C).transpose(0, 2, 1)  # (B, C, T)
+            return X_norm
+        elif X_raw.ndim == 4:
+            # (B, C, F, T)
+            B, C, F, T = X_raw.shape
+            flat = X_raw.transpose(0, 2, 3, 1).reshape(-1, C)  # (B*F*T, C)
+            if self.split == "train":
+                scalar = StandardScaler().fit(flat)
+                joblib.dump(scalar, scalar_path)
+            else:
+                scalar = joblib.load(scalar_path)
+            X_norm = scalar.transform(flat)
+            X_norm = X_norm.reshape(B, F, T, C).transpose(0, 3, 1, 2)  # (B, C, F, T)
+            return X_norm
         else:
-            scalar = joblib.load(scalar_path)
-
-        X_norm = scalar.transform(flat)  # (B*T, C)
-        X_norm = X_norm.reshape(-1, self.win_len, self.n_channels).transpose(0, 2, 1)  # (B, C, T)
-
-        return X_norm
+            raise ValueError(f"Unsupported input shape for normalization: {X_raw.shape}")
 
     def _band_pass_filter(self, data: np.ndarray):
         """
