@@ -25,16 +25,15 @@ IDX_TO_LABEL = {i: lbl for i, lbl in enumerate(LABELS)}
 
 _SFREQ = 250
 _B, _A = butter(4, [3 / _SFREQ * 2, 100 / _SFREQ * 2], btype="bandpass")  # type: ignore
-n_channels = 8
 
 # encode/decode for unlabeled mode
-def position_encode(subj, sess, trial):
+def position_encode(subj, sess, trial, n_channels=3):
     subj_idx = int(subj[1:]) - 1
     sess_idx = int(sess) - 1
     trial_idx = int(trial) - 1
     return (subj_idx * n_channels + sess_idx) * 10 + trial_idx
 
-def position_decode(code):
+def position_decode(code, n_channels=3):
     trial_idx = code % 10
     code //= 10
     sess_idx = code % n_channels
@@ -66,6 +65,7 @@ class EEGDataset(Dataset):
             if eeg_channels is None
             else eeg_channels
         )
+        self.n_channels = len(self.channels)
 
         self.read_labels = read_labels
         self.lda_n_components = lda_n_components
@@ -74,7 +74,6 @@ class EEGDataset(Dataset):
 
         self.lda_model_path = os.path.join(checkpoints_dir, f"{task}_lda.pkl")
         self.signal_scalar_path = os.path.join(checkpoints_dir, f"{task}_signal_scaler.pkl")
-        self.feature_scalar_path = os.path.join(checkpoints_dir, f"{task}_feature_scaler.pkl")
         self.csp_model_path = os.path.join(checkpoints_dir, f"{task}_csp_model_path.pkl")
         self.car_transformer_path = os.path.join(checkpoints_dir, f"{task}_car_transformer_path.pkl")
 
@@ -148,9 +147,9 @@ class EEGDataset(Dataset):
         # stack and transform
         X_np = np.stack(data_list)  # BxCxT
         X_np = self.apply_car(X_np)
-        freqs = np.linspace(8, 32, 40)
-        X_np = self.apply_cwt(X_np, _SFREQ, freqs=freqs)  # (B, C, len(freqs), T)
-
+        # freqs = np.linspace(8, 32, 40)
+        # X_np = self.apply_cwt(X_np, _SFREQ, freqs=freqs)  # (B, C, len(freqs), T)
+        X_np = self._normalize_signal(X_np, scalar_path=self.signal_scalar_path)
         # finalize tensors
         self.data = torch.tensor(X_np, dtype=torch.float32)               # (B, C, F, T)
         self.labels = torch.tensor(label_list, dtype=torch.long)         # (B,)
@@ -206,7 +205,7 @@ class EEGDataset(Dataset):
         return X_filt
 
     def _normalize_signal(self, X_raw: np.ndarray, scalar_path: str):
-        flat = X_raw.transpose(0, 2, 1).reshape(-1, n_channels)  # B*T, C
+        flat = X_raw.transpose(0, 2, 1).reshape(-1, self.n_channels)  # B*T, C
         if self.split == "train":
             scalar = StandardScaler().fit(flat)
             joblib.dump(scalar, scalar_path)
@@ -214,7 +213,7 @@ class EEGDataset(Dataset):
             scalar = joblib.load(scalar_path)
 
         X_norm = scalar.transform(flat)  # (B*T, C)
-        X_norm = X_norm.reshape(-1, self.win_len, n_channels).transpose(0, 2, 1)  # (B, C, T)
+        X_norm = X_norm.reshape(-1, self.win_len, self.n_channels).transpose(0, 2, 1)  # (B, C, T)
 
         return X_norm
 
@@ -222,7 +221,6 @@ class EEGDataset(Dataset):
         return len(self.classes)
 
     def __getitem__(self, i):
-        # returns (data, [label, subject_id])
         return self.data[i], self.classes[i]
 
 
@@ -242,6 +240,7 @@ if __name__ == "__main__":
         win_len=int(2.0 * _SFREQ),  # 2 s window → 500 samples
         read_labels=True,
     )
+    print("wtf")
     # dataset_ssvep_val = EEGDataset(
     #     data_path="./data/mtcaic3",
     #     task="SSVEP",
