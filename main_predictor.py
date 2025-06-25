@@ -1,7 +1,7 @@
 import torch, numpy as np, pandas as pd
 from tqdm import tqdm
 import torch.nn.functional as F
-from modules.competition_dataset import EEGDataset, decode_label, position_decode
+from modules.competition_dataset_windowed import EEGDataset, decode_label, position_decode
 from Models import get_mi_model, get_ssvep_model
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
