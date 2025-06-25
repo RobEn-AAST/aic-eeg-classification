@@ -192,7 +192,7 @@ class CCT(nn.Module):
             dropout=dropout,
             mlp_size=mlp_size,
             positional_embedding=positional_emb,
-            sequence_length=self.tokenizer.sequence_length(n_channels=1, height=8, width=1125),  # TODO
+            sequence_length=self.tokenizer.sequence_length(n_channels=1, height=4, width=1125),  # TODO
         )
 
     def forward(self, x):
@@ -202,7 +202,7 @@ class CCT(nn.Module):
 
 
 if __name__ == "__main__":
-    model = CCT(kernel_sizes=[(8, 1), (1, 24), (1, 24)], stride=(1, 1), padding=(0, 0), # first kernel size was 22 in paper
+    model = CCT(kernel_sizes=[(4, 1), (1, 24), (1, 24)], stride=(1, 1), padding=(0, 0), # first kernel size was 22 in paper
             pooling_kernel_size=(3, 3), pooling_stride=(1, 1), pooling_padding=(0, 0),
             n_conv_layers=3, n_input_channels=1,
             in_planes=48, activation=None, # ReLU
@@ -211,4 +211,7 @@ if __name__ == "__main__":
             num_heads=3, num_classes=2, 
             attn_dropout=0.1, dropout=0.1, 
             mlp_size=48, positional_emb="learnable")
+            
+    model(torch.randn(1, 1, 4, 1125))
+    print("worked!")
 
