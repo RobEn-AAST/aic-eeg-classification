@@ -154,7 +154,7 @@ class EEGDataset(Dataset):
         # finalize tensors
         self.data = torch.tensor(X_np, dtype=torch.float32)               # (B, C, F, T)
         self.labels = torch.tensor(label_list, dtype=torch.long)         # (B,)
-        self.subjects = torch.tensor(subject_list, dtype=torch.long)     # (B,)
+        self.subjects = torch.tensor(subject_list, dtype=torch.long) - 1     # (B,)
         # now pack into (B,2): first column = label, second = subject ID
         self.classes = torch.stack((self.labels, self.subjects), dim=1)  # (B,2)
 
