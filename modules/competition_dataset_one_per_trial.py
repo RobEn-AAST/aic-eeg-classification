@@ -8,13 +8,23 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 import joblib
 from mne.decoding import CSP
 from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import FunctionTransformer
+import pywt
+
+def car_func(x):
+    return x - np.mean(x, axis=1, keepdims=True)
+
+CarTransformer = FunctionTransformer(
+    func = car_func, # x shape: BxCxT
+    validate=False,
+)
 
 LABELS = ["Left", "Right", "Backward", "Forward"]
 LABEL_TO_IDX = {lbl: i for i, lbl in enumerate(LABELS)}
 IDX_TO_LABEL = {i: lbl for i, lbl in enumerate(LABELS)}
 
 _SFREQ = 250
-_B, _A = butter(4, [3 / _SFREQ * 2, 100 / _SFREQ * 2], btype="bandpass")
+_B, _A = butter(4, [3 / _SFREQ * 2, 100 / _SFREQ * 2], btype="bandpass") # type: ignore
 n_channels = 8
 
 # encode/decode for unlabeled mode
@@ -48,13 +58,14 @@ class EEGDataset(Dataset):
         lda_n_components=3,
         n_csp=4,
         checkpoints_dir="./checkpoints/",
+        eeg_channels = None,
     ):
         super().__init__()
         task = task.upper()
         self.tmin = int(tmin * _SFREQ)
         default_sizes = {"SSVEP": int(2.0 * _SFREQ), "MI": int(4.5 * _SFREQ)}
         self.win_len = win_len or default_sizes.get(task, int(1.0 * _SFREQ))
-        self.channels = ["C3", "PZ", "C4", "OZ", "PO7", "PO8", "CZ", "FZ"]
+        self.channels = ["C3", "PZ", "C4", "OZ", "PO7", "PO8", "CZ", "FZ"] if eeg_channels is None else eeg_channels
 
         self.read_labels = read_labels
         self.lda_n_components = lda_n_components
@@ -65,6 +76,7 @@ class EEGDataset(Dataset):
         self.signal_scalar_path = os.path.join(checkpoints_dir, f"{task}_signal_scaler.pkl")
         self.feature_scalar_path = os.path.join(checkpoints_dir, f"{task}_feature_scaler.pkl")
         self.csp_model_path = os.path.join(checkpoints_dir, f"{task}_csp_model_path.pkl")
+        self.car_transformer_path = os.path.join(checkpoints_dir, f"{task}_car_transformer_path.pkl")
 
         # prepare trial list
         if read_labels:
@@ -119,18 +131,54 @@ class EEGDataset(Dataset):
             label_list.append(idx)
 
         X_np = np.stack(data_list)  # BxCxT
-        y_np = np.array(label_list)  # B
 
-        X_np = self._normalize_signal(X_np, self.signal_scalar_path)
-        X_np = self.apply_csp(X_np, y_np)
-        # X_np = self._normalize_signal(X_np, self.feature_scalar_path)
-        # X_np = self.apply_lda(X_np)
+        X_np = self.apply_car(X_np)
+        freqs = np.linspace(8, 32, 40)
+        X_np = self.apply_cwt(X_np, _SFREQ, freqs=freqs) # (B, C, len(freqs), T)
+        # X_np = self._normalize_signal(X_np, self.signal_scalar_path)
 
         # finalize
         self.data = torch.tensor(X_np, dtype=torch.float32)
         self.labels = torch.tensor(label_list, dtype=torch.long)
         print(f"data shape: {self.data.shape}, label shape: {self.labels.shape}")
+    
+    def apply_car(self, X: np.ndarray) -> np.ndarray:
+        """
+        Common Average Reference: subtract at each time‐point the mean across channels.
+        X: (B, C, T)
+        returns X_car: same shape
+        """
+        if self.split == "train":
+            car_transformer = CarTransformer.fit(X)
+            joblib.dump(car_transformer, self.car_transformer_path)
+        else:
+            car_transformer = joblib.load(self.car_transformer_path)
+            
+            
+        X = np.asarray(car_transformer.transform(X))  # (B, C, T)
+        return X
+        
+    def apply_cwt(self, X: np.ndarray, sfreq: int, freqs: np.ndarray) -> np.ndarray:
+        """
+        Continuous Wavelet Transform per channel.
+        X: (B, C, T)
+        sfreq: sampling frequency (e.g. 250)
+        freqs: array of desired output frequencies (e.g. np.linspace(8,32,40))
+        returns: (B, C, len(freqs), T) scalogram magnitudes
+        """
+        # compute scales for Morlet wavelet
+        center_freq = pywt.central_frequency('morl')
+        scales = center_freq * sfreq / freqs
+        B, C, T = X.shape
+        tf_images = np.zeros((B, C, len(freqs), T), dtype=np.float32)
+        for b in range(B):
+            for c in range(C):
+                coef, _ = pywt.cwt(X[b, c], scales, 'morl', sampling_period=1/sfreq)
+                tf_images[b, c] = np.abs(coef)
+        return tf_images
 
+
+    
     def apply_csp(self, X: np.ndarray, y: np.ndarray):
         if self.split == "train":
             csp = CSP(n_components=self.n_csp, reg="ledoit_wolf", log=None, transform_into="csp_space")
@@ -155,23 +203,6 @@ class EEGDataset(Dataset):
 
         return X_norm
 
-    # def apply_lda(self, data: np.ndarray):
-    #     assert self.lda_n_components is not None, "n_components must be specified when using LDA"
-
-    #     X = data.permute(0, 2, 1).reshape(-1, self.data.size(1)).numpy()
-    #     y = np.repeat(self.labels.numpy(), self.win_len)
-    #     if self.split == "train":
-    #         lda = LDA(n_components=self.lda_n_components)
-    #         lda.fit(X, y)
-    #         joblib.dump(lda, self.lda_model_path)
-    #     else:
-    #         lda = joblib.load(self.lda_model_path)
-    #     Xt = lda.transform(X)
-    #     B = data.size(0)
-    #     data = torch.tensor(Xt.reshape(B, self.win_len, self.lda_n_components).transpose(0, 2, 1), dtype=torch.float32)
-
-        return data
-
     def __len__(self):
         return len(self.labels)
 
@@ -190,37 +221,35 @@ if __name__ == "__main__":
         data_path="./data/mtcaic3",
         task="SSVEP",
         split="train",
+        data_fraction=0.2,
         tmin=0.5,  # skip first 0.5 s (125 samples)
         win_len=int(2.0 * _SFREQ),  # 2 s window → 500 samples
         read_labels=True,
-        hardcoded_mean=True,
     )
-    dataset_ssvep_val = EEGDataset(
-        data_path="./data/mtcaic3",
-        task="SSVEP",
-        split="validation",
-        tmin=0.5,
-        win_len=int(2.0 * _SFREQ),
-        read_labels=True,
-        hardcoded_mean=True,
-    )
+    # dataset_ssvep_val = EEGDataset(
+    #     data_path="./data/mtcaic3",
+    #     task="SSVEP",
+    #     split="validation",
+    #     tmin=0.5,
+    #     win_len=int(2.0 * _SFREQ),
+    #     read_labels=True,
+    # )
 
-    # MI (4.5 s window @ 250 Hz)
-    dataset_mi_train = EEGDataset(
-        data_path="./data/mtcaic3",
-        task="MI",
-        split="train",
-        tmin=0.5,  # skip first 0.5 s (125 samples)
-        win_len=int(4.5 * _SFREQ),  # 4.5 s window → 1125 samples
-        read_labels=True,
-        hardcoded_mean=True,
-    )
-    dataset_mi_val = EEGDataset(
-        data_path="./data/mtcaic3",
-        task="MI",
-        split="validation",
-        tmin=0.5,
-        win_len=int(4.5 * _SFREQ),
-        read_labels=True,
-        hardcoded_mean=True,
-    )
+    # # MI (4.5 s window @ 250 Hz)
+    # dataset_mi_train = EEGDataset(
+    #     data_path="./data/mtcaic3",
+    #     task="MI",
+    #     split="train",
+    #     tmin=0.5,  # skip first 0.5 s (125 samples)
+    #     win_len=int(4.5 * _SFREQ),  # 4.5 s window → 1125 samples
+    #     read_labels=True,
+    # )
+    # dataset_mi_val = EEGDataset(
+    #     data_path="./data/mtcaic3",
+    #     task="MI",
+    #     split="validation",
+    #     tmin=0.5,
+    #     win_len=int(4.5 * _SFREQ),
+    #     read_labels=True,
+    #     hardcoded_mean=True,
+    # )
