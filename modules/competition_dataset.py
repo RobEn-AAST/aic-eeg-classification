@@ -254,16 +254,6 @@ class EEGDataset(Dataset):
     def _band_pass_filter(self, data: np.ndarray):
         return signal.filtfilt(_B, _A, data, axis=2)
 
-    # --- MISSING HELPER FUNCTIONS ADDED BACK ---
-    def _get_normalization_stats_3d(self, data: np.ndarray):
-        mean = data.mean(axis=(0, 2), keepdims=True)
-        std = data.std(axis=(0, 2), keepdims=True) + 1e-6
-        print(f"New 3D stats calculated. Mean shape: {mean.shape}")
-        return mean, std
-
-    def _normalize(self, data: np.ndarray):
-        return (data - self.mean) / self.std
-
     def __getitem__(self, idx):
         return self.data[idx], self.classes[idx]
 
