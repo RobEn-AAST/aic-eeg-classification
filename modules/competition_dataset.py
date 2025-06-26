@@ -23,7 +23,7 @@ CarTransformer = FunctionTransformer(
     validate=False,
 )
 
-LABELS = ["Backward", "Forward", "Left", "Right"]  # ! FOR SSVEP
+LABELS = ["Left", "Right", "Backward", "Forward"]  # ! FOR SSVEP
 LABEL_TO_IDX = {lbl: i for i, lbl in enumerate(LABELS)}
 IDX_TO_LABEL = {idx: label for idx, label in enumerate(LABELS)}
 
@@ -120,7 +120,7 @@ class EEGDataset(Dataset):
             start, end = (trial - 1) * trial_length, trial * trial_length
             trial_data = arr[start:end]
             mask = trial_data[:, -1] == 1
-            T = trial_data[mask, :-1].T
+            T = trial_data[mask, :-1][175:].T # skip first 175 points
             if T.shape[1] < self.window_length:
                 skipped_shit += 1
                 continue
@@ -172,8 +172,6 @@ class EEGDataset(Dataset):
         # ...after any label/subject postprocessing...
         self.labels = torch.from_numpy(labels_np).to(torch.int64)
         self.subjects = torch.from_numpy(subjects_np).to(torch.int64)
-        if task == "MI" and self.read_labels:
-            self.labels -= 2
         self.trial_ids = trial_ids
         # Combine labels and subjects into (B, 2)
         self.classes = torch.stack((self.labels, self.subjects), dim=1)
@@ -255,74 +253,63 @@ class EEGDataset(Dataset):
         return signal.filtfilt(_B, _A, data, axis=2)
 
     def __getitem__(self, idx):
-        x, cls = self.data[idx], self.classes[idx]
+        # fetch raw sample
+        x   = self.data[idx]      # shape: (C, T) or (C, F, T)
+        cls = self.classes[idx]   # unchanged label/domain tuple
+
         if self.split == "train":
-            # time shift
+            # --- 1) time shift (both domains) ---
             shift = np.random.randint(-10, 10)
             x = torch.roll(x, shifts=shift, dims=-1)
 
-            # random scaling
-            scale = np.random.uniform(0.9, 1.1)
-            x = x * scale
+            # Only for TF images:
+            if x.ndim == 3:  # (C, F, T)
+                C, F, T = x.shape
 
-            # channel dropout
-            if np.random.rand() < 0.3:
-                ch = np.random.randint(0, x.size(0))
-                x[ch] = 0
+                # --- 2) multiple freq-masks (SpecAugment) ---
+                for _ in range(np.random.randint(1, 4)):         # 1–3 masks
+                    w  = np.random.randint(1, int(0.15 * F) + 1) # up to 15% of bands
+                    f0 = np.random.randint(0, F - w)
+                    x[:, f0:f0 + w, :] = 0
 
-            # mixup with another sample
-            if np.random.rand() < 0.5:
-                j = np.random.randint(len(self))
-                lambda_ = np.random.beta(0.2, 0.2)
-                x2, cls2 = self.data[j], self.classes[j]
-                x = lambda_*x + (1-lambda_)*x2
-                cls = (lambda_*cls + (1-lambda_)*cls2).long()
-        return x, cls
-        
-        # for BxCxFxT
-        x, cls = self.data[idx], self.classes[idx]  # x: (C,T) or (C,F,T)
+                # --- 3) multiple time-masks (SpecAugment) ---
+                for _ in range(np.random.randint(1, 4)):         # 1–3 masks
+                    w  = np.random.randint(1, int(0.15 * T) + 1) # up to 15% of frames
+                    t0 = np.random.randint(0, T - w)
+                    x[:, :, t0:t0 + w] = 0
 
-        if self.split == "train":
-            # time shift (works for both shapes)
-            shift = np.random.randint(-10, 10)
-            x = torch.roll(x, shifts=shift, dims=-1)
+                # --- 4) random frequency shift ---
+                shift_f = np.random.randint(-2, 3)  # shift by ±2 bands
+                x = torch.roll(x, shifts=shift_f, dims=1)
 
-            # if TF-image, do SpecAugment masks
-            if x.ndim == 3:  # (C,F,T)
-                # freq‐mask
-                f = x.size(-2)
-                w = np.random.randint(1, int(0.2*f))
-                f0 = np.random.randint(0, f - w)
-                x[:, f0:f0+w, :] = 0
-                # time‐mask
-                t = x.size(-1)
-                w = np.random.randint(1, int(0.2*t))
-                t0 = np.random.randint(0, t - w)
-                x[:, :, t0:t0+w] = 0
+                # --- 5) amplitude scaling per band ---
+                scales = torch.empty(F).uniform_(0.8, 1.2).to(x.device)
+                x = x * scales.view(1, F, 1)
 
-            # channel dropout (both shapes)
-            if np.random.rand() < 0.3:
+            # --- 6) channel dropout (both domains) ---
+            if np.random.rand() < 0.1:
                 ch = np.random.randint(0, x.size(0))
                 x[ch, ...] = 0
 
-            # mixup (both shapes)
+            # --- 7) additive Gaussian noise (both domains) ---
             if np.random.rand() < 0.5:
-                j = np.random.randint(len(self))
-                x2, cls2 = self.data[j], self.classes[j]
-                λ = np.random.beta(0.2, 0.2)
-                x   = λ * x   + (1 - λ) * x2
-                cls = (λ * cls + (1 - λ) * cls2).long()
+                noise = torch.randn_like(x) * 0.01  # σ = 0.01
+                x = x + noise
+
+            # --- 8) mixup on inputs only (both domains) ---
+            if np.random.rand() < 0.3:
+                j  = np.random.randint(len(self))
+                x2 = self.data[j]
+                lamda  = np.random.uniform(0.9, 1)
+                x  = lamda * x + (1 - lamda) * x2
+                # cls is left unchanged
 
         return x, cls
 
-    def __len__(self):
-        return len(self.data)
 
 
 # ... (rest of the file, including decode_label, etc.)
 def decode_label(idx, task):
-    if task.upper() == "MI":
-        idx += 2
     return IDX_TO_LABEL[int(idx)]
 
 
