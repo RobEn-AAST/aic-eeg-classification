@@ -1,4 +1,3 @@
-# %%
 from torch.utils.data import Dataset
 import os
 import numpy as np
@@ -10,16 +9,30 @@ from numpy.lib.stride_tricks import sliding_window_view
 from kymatio.torch import Scattering1D
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 import joblib
+import pywt
+from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import FunctionTransformer
 
-LABELS = ["Backward", "Forward", "Left", "Right"] # ! FOR SSVEP
+
+def car_func(x):
+    return x - np.mean(x, axis=1, keepdims=True)
+
+
+CarTransformer = FunctionTransformer(
+    func=car_func,  # x shape: BxCxT
+    validate=False,
+)
+
+LABELS = ["Backward", "Forward", "Left", "Right"]  # ! FOR SSVEP
 LABEL_TO_IDX = {lbl: i for i, lbl in enumerate(LABELS)}
 IDX_TO_LABEL = {idx: label for idx, label in enumerate(LABELS)}
 
 # Precompute filter once
-_SFREQ = 256
-_LOW, _HI = 3, 100
+_SFREQ = 250
 _NYQ = _SFREQ / 2.0
-_B, _A = signal.butter(4, [_LOW / _NYQ, _HI / _NYQ], btype="bandpass")  # type: ignore
+_LOW, _HI = 3, 30.4
+order = 4
+_B, _A = signal.butter(order, [_LOW / _NYQ, _HI / _NYQ], btype="bandpass")  # type: ignore
 n_channels = 8
 
 
@@ -35,10 +48,9 @@ class EEGDataset(Dataset):
         split="train",
         read_labels=True,
         data_fraction=1.0,
-        n_components=3,
         eeg_channels=["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"],
-        lda_model_path=None,
         hardcoded_mean=False,
+        checkpoints_dir="./checkpoints",
     ):
         super().__init__()
         assert domain in ("time", "freq")
@@ -52,6 +64,11 @@ class EEGDataset(Dataset):
         self.split = split
         self.read_labels = read_labels
         self.data_fraction = data_fraction
+
+        self.lda_model_path = os.path.join(checkpoints_dir, f"{task}_lda.pkl")
+        self.signal_scalar_path = os.path.join(checkpoints_dir, f"{task}_signal_scaler.pkl")
+        self.csp_model_path = os.path.join(checkpoints_dir, f"{task}_csp_model_path.pkl")
+        self.car_transformer_path = os.path.join(checkpoints_dir, f"{task}_car_transformer_path.pkl")
 
         usecols = eeg_channels + ["Validation"]
 
@@ -128,46 +145,28 @@ class EEGDataset(Dataset):
         labels_np = np.array(labels, dtype=np.int64)
         subjects_np = np.array(subjects, dtype=np.int64)
 
-        data_array = self._band_pass_filter(data_array)  # this greatly boosted t-sne
+        # preprocessing
+        data_array = self._band_pass_filter(data_array)  # Apply bandpass filter to all data at once
+        data_array = self.apply_car(data_array)  # Apply CAR
+        # freqs = np.linspace(8, 32, 40)
+        # data_array = self.apply_cwt(data_array, _SFREQ, freqs=freqs)  # (B, C, len(freqs), T)
+        data_array = self._normalize_signal(data_array, scalar_path=self.signal_scalar_path)
 
-        if self.domain == "freq":
-            data_array = self._convert_freq(data_array)
+        # # normalize bad way
+        # if task == "SSVEP":
+        #     self.mean = np.array([-1.0309, -0.4789, -0.6384], dtype=np.float32).reshape(1, -1, 1)
+        #     self.std = np.array([2178.9883, 1022.6290, 977.3783], dtype=np.float32).reshape(1, -1, 1)
+        # elif task == "MI":
+        #     self.mean = np.array([-2.4363, -1.8794, -5.8781, -1.6775, -5.1054, -1.5866, -2.0616, -0.6325], dtype=np.float32).reshape(1, -1, 1)
+        #     self.std = np.array([2598.5059, 1745.9202, 3957.9285, 2063.0957, 2298.0815, 1139.0936, 1412.2756, 1103.5853], dtype=np.float32).reshape(1, -1, 1)
+        # else:
+        #     raise ValueError(f"Unknown task {task}")
 
-        if task == "SSVEP":
-            self.mean = np.array([-1.0309, -0.4789, -0.6384], dtype=np.float32).reshape(1, -1, 1)
-            self.std = np.array([2178.9883, 1022.6290,  977.3783], dtype=np.float32).reshape(1, -1, 1)
-        elif task == "MI":
-            self.mean = np.array([-2.4363, -1.8794, -5.8781, -1.6775, -5.1054, -1.5866, -2.0616, -0.6325], dtype=np.float32).reshape(1, -1, 1)
-            self.std = np.array([2598.5059, 1745.9202, 3957.9285, 2063.0957, 2298.0815, 1139.0936, 1412.2756, 1103.5853], dtype=np.float32).reshape(1, -1, 1)
-        else:
-            raise ValueError(f"Unknown task {task}")
-
-        if hardcoded_mean:
-            data_array = self._normalize(data_array)
-            print(f"data shape: {data_array.shape}, mean shape: {self.mean.shape}")
-        else:
-            print("not normalizing...")
-
-        if lda_model_path is not None:
-            print(f"Using LDA")
-            B, C, T = data_array.shape
-            X_all = data_array.transpose(0, 2, 1).reshape(B * T, C)
-            y_all = np.repeat(labels_np, T)
-            assert n_components is not None, "n_components must be specified when using decomposition."
-
-            if self.split == "train":
-                lda = LDA(n_components=n_components)
-                lda.fit(X_all, y_all)
-                joblib.dump(lda, lda_model_path)
-                print(f"LDA fitted and saved to {lda_model_path}")
-            else:
-                if not os.path.exists(lda_model_path):
-                    raise FileNotFoundError(f"Model path {lda_model_path} does not exist. Run training split first.")
-                lda = joblib.load(lda_model_path)
-                print(f"LDA model loaded from {lda_model_path}")
-
-            data_array = lda.transform(X_all)  # (B*T, n_components)
-            data_array = data_array.reshape(B, T, n_components).transpose(0, 2, 1)  # (B, n_components, T)
+        # if hardcoded_mean:
+        #     data_array = self._normalize(data_array)
+        #     print(f"data shape: {data_array.shape}, mean shape: {self.mean.shape}")
+        # else:
+        #     print("not normalizing...")
 
         self.data = torch.from_numpy(data_array.copy()).to(torch.float32)
         # ...after any label/subject postprocessing...
@@ -178,6 +177,72 @@ class EEGDataset(Dataset):
         self.trial_ids = trial_ids
         # Combine labels and subjects into (B, 2)
         self.classes = torch.stack((self.labels, self.subjects), dim=1)
+
+    def _normalize_signal(self, X_raw: np.ndarray, scalar_path: str):
+        """
+        Normalize signal for both (B, C, T) and (B, C, F, T) shapes.
+        For (B, C, T): normalize across (B*T, C).
+        For (B, C, F, T): normalize across (B*F*T, C).
+        """
+        if X_raw.ndim == 3:
+            # (B, C, T)
+            B, C, T = X_raw.shape
+            flat = X_raw.transpose(0, 2, 1).reshape(-1, C)  # (B*T, C)
+            if self.split == "train":
+                scalar = StandardScaler().fit(flat)
+                joblib.dump(scalar, scalar_path)
+            else:
+                scalar = joblib.load(scalar_path)
+            X_norm = scalar.transform(flat)
+            X_norm = X_norm.reshape(B, T, C).transpose(0, 2, 1)  # (B, C, T)
+            return X_norm
+        elif X_raw.ndim == 4:
+            # (B, C, F, T)
+            B, C, F, T = X_raw.shape
+            flat = X_raw.transpose(0, 2, 3, 1).reshape(-1, C)  # (B*F*T, C)
+            if self.split == "train":
+                scalar = StandardScaler().fit(flat)
+                joblib.dump(scalar, scalar_path)
+            else:
+                scalar = joblib.load(scalar_path)
+            X_norm = scalar.transform(flat)
+            X_norm = X_norm.reshape(B, F, T, C).transpose(0, 3, 1, 2)  # (B, C, F, T)
+            return X_norm
+        else:
+            raise ValueError(f"Unsupported input shape for normalization: {X_raw.shape}")
+
+
+    def apply_car(self, X: np.ndarray) -> np.ndarray:
+        """
+        Common Average Reference: subtract at each time‐point the mean across channels.
+        X: (B, C, T)
+        returns X_car: same shape
+        """
+        if self.split == "train":
+            car_transformer = CarTransformer.fit(X)
+            joblib.dump(car_transformer, self.car_transformer_path)
+        else:
+            car_transformer = joblib.load(self.car_transformer_path)
+
+        return np.asarray(car_transformer.transform(X))
+
+    def apply_cwt(self, X: np.ndarray, sfreq: int, freqs: np.ndarray) -> np.ndarray:
+        """
+        Continuous Wavelet Transform per channel.
+        X: (B, C, T)
+        sfreq: sampling frequency (e.g. 250)
+        freqs: array of desired output frequencies (e.g. np.linspace(8,32,40))
+        returns: (B, C, len(freqs), T) scalogram magnitudes
+        """
+        center_freq = pywt.central_frequency("morl")
+        scales = center_freq * sfreq / freqs
+        B, C, T = X.shape
+        tf_images = np.zeros((B, C, len(freqs), T), dtype=np.float32)
+        for b in range(B):
+            for c in range(C):
+                coef, _ = pywt.cwt(X[b, c], scales, "morl", sampling_period=1 / sfreq)
+                tf_images[b, c] = np.abs(coef)
+        return tf_images
 
     def _convert_freq(self, data: np.ndarray):
         data = np.abs(rfft(data, axis=2))  # type:ignore
