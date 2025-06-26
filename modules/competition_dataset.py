@@ -137,8 +137,8 @@ class EEGDataset(Dataset):
             self.mean = np.array([-1.0309, -0.4789, -0.6384], dtype=np.float32).reshape(1, -1, 1)
             self.std = np.array([2178.9883, 1022.6290,  977.3783], dtype=np.float32).reshape(1, -1, 1)
         elif task == "MI":
-            self.mean = np.array([-1.8794, -1.6775, -5.1054], dtype=np.float32).reshape(1, -1, 1)
-            self.std = np.array([1745.9202, 2063.0957, 2298.0815], dtype=np.float32).reshape(1, -1, 1)
+            self.mean = np.array([-2.4363, -1.8794, -5.8781, -1.6775, -5.1054, -1.5866, -2.0616, -0.6325], dtype=np.float32).reshape(1, -1, 1)
+            self.std = np.array([2598.5059, 1745.9202, 3957.9285, 2063.0957, 2298.0815, 1139.0936, 1412.2756, 1103.5853], dtype=np.float32).reshape(1, -1, 1)
         else:
             raise ValueError(f"Unknown task {task}")
 

@@ -2,10 +2,11 @@ import torch
 import torch.nn as nn
 import os
 from torch.utils.data import DataLoader, ConcatDataset, random_split
-from modules.utils import evaluate_model # Assuming this function exists and is correct
+from modules.utils import evaluate_model  # Assuming this function exists and is correct
 import optuna
-from modules import EEGDataset # Assuming this class exists and is correct
+from modules import EEGDataset  # Assuming this class exists and is correct
 import numpy as np
+
 
 class Trainer:
     def __init__(self, data_path, optuna_db_path, model_path, task, eeg_channels, train_epochs=1000, tune_epochs=30, optuna_n_trials=120, data_fraction=1):
@@ -25,8 +26,7 @@ class Trainer:
 
         # <<< FIX: Renamed eval_loader to val_loader for consistency
         self.train_loader = None
-        self.val_loader = None 
-        self.dataset = None
+        self.val_loader = None
         self.data_fraction = data_fraction
 
         self.storage = f"sqlite:///{optuna_db_path}"
@@ -43,6 +43,7 @@ class Trainer:
         if self.trial is None:
             print("Warning: self.trial is None. Assuming this is the final training phase.")
 
+        domain_loss_weight = 0.5
         for epoch in range(n_epochs):
             self.model.to(self.device)
             self.model.train()
@@ -51,9 +52,14 @@ class Trainer:
             for x, y in self.train_loader:
                 x = x.to(self.device)
                 y = y.to(self.device)
+                y_labels = y[:, 0]
+                y_domains = y[:, 1]
 
-                y_pred = self.model(x)
-                loss = self.criterion(y_pred, y)
+
+                y_pred_labels, y_pred_domain = self.model(x)
+                loss_label = self.criterion(y_pred_labels, y_labels)
+                loss_domain = self.criterion(y_pred_domain, y_domains)
+                loss = loss_label + domain_loss_weight * loss_domain
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -61,7 +67,7 @@ class Trainer:
                 avg_loss += loss.item()
 
             avg_loss = avg_loss / len(self.train_loader)
-            evaluation = evaluate_model(self.model, self.val_loader, self.device)
+            evaluation, _ = evaluate_model(self.model, self.val_loader, self.device)
 
             if self.trial is not None:
                 self.trial.report(evaluation, epoch)
@@ -81,7 +87,6 @@ class Trainer:
                 torch.save(self.model.state_dict(), self.model_path)
                 self.model.to(self.device)
                 print(f"Model saved to {self.model_path}")
-
 
     # <<< FIX: This entire method was refactored for clarity and correctness.
     def _prepare_data(self, is_trial, batch_size=None, window_length=None, stride_factor=3):
@@ -104,57 +109,35 @@ class Trainer:
         # <<< FIX: Simplified data loading. Load all relevant data once.
         # Assuming EEGDataset can handle loading all data without a 'split' argument
         # or that you handle train/val splits externally. The Concat+random_split is a good pattern.
-        
+
         # This assumed 'split' argument might need to be adjusted based on your EEGDataset implementation
 
         dataset_train_full = EEGDataset(
-            self.data_path,
-            window_length=window_length,
-            stride=stride,
-            data_fraction=self.data_fraction,
-            hardcoded_mean=True,
-            task=self.task,
-            eeg_channels = self.eeg_channels
+            self.data_path, window_length=window_length, stride=stride, data_fraction=self.data_fraction, hardcoded_mean=True, task=self.task, eeg_channels=self.eeg_channels
         )
 
         dataset_val_full = EEGDataset(
-            data_path=self.data_path,
-            window_length=window_length,
-            stride=stride,
-            task=self.task,
-            split='validation',
-            read_labels=True,
-            hardcoded_mean=True,
-            eeg_channels=self.eeg_channels
+            data_path=self.data_path, window_length=window_length, stride=stride, task=self.task, split="validation", read_labels=True, hardcoded_mean=True, eeg_channels=self.eeg_channels
         )
-        # <<< FIX: Assign the concatenated dataset to self.dataset so CustomTrainer can use it.
-        self.dataset = ConcatDataset([dataset_train_full, dataset_val_full])
-        
-        train_len = int(len(self.dataset) * 0.8)
-        val_len = len(self.dataset) - train_len
-        
-        train_ds, val_ds = random_split(self.dataset, [train_len, val_len])
-        
-        self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-        self.val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False)
-        print(f"Data prepared: Train batches={len(self.train_loader)}, Val batches={len(self.val_loader)}")
-        
 
+        self.train_loader = DataLoader(dataset_train_full, batch_size=batch_size, shuffle=True)
+        self.val_loader = DataLoader(dataset_val_full, batch_size=batch_size, shuffle=False)
+        print(f"Data prepared: Train batches={len(self.train_loader)}, Val batches={len(self.val_loader)}")
 
     def _objective(self, trial: optuna.Trial):
         self.trial = trial
-        
+
         # In your CustomTrainer, you will override a method that calls _prepare_data
         # and then sets the model and optimizer.
         # For this to work, we must call the custom preparation logic.
-        self.prepare_trial_run() # This method will be defined in CustomTrainer
-        
+        self.prepare_trial_run()  # This method will be defined in CustomTrainer
+
         assert self.model is not None, "Model is not set. Ensure prepare_trial_run creates self.model."
         assert self.optimizer is not None, "Optimizer is not set. Ensure prepare_trial_run creates self.optimizer."
- 
+
         self._train_loop(self.tune_epochs, should_print=True)
-        evaluation = evaluate_model(self.model, self.val_loader, self.device)
-        return evaluation
+        evaluation_label, _ = evaluate_model(self.model, self.val_loader, self.device)
+        return evaluation_label
 
     def _get_study(self):
         return optuna.create_study(study_name=self.study_name, storage=self.storage, direction="maximize", load_if_exists=True)
@@ -173,7 +156,7 @@ class Trainer:
         print("\n--- Optimization Finished ---")
         print(f"Study statistics: ")
         print(f"  Number of finished trials: {len(study.trials)}")
-        
+
         pruned_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.PRUNED])
         complete_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.COMPLETE])
 
@@ -193,7 +176,7 @@ class Trainer:
         self.trial = None
         # Same as in _objective, we rely on the custom implementation
         self.prepare_final_run()
-        
+
         self.data_fraction = 1
         self._train_loop(self.train_epochs, should_save=True, should_print=True)
         evaluation = evaluate_model(self.model, self.val_loader, self.device)
