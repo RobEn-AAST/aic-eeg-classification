@@ -255,7 +255,65 @@ class EEGDataset(Dataset):
         return signal.filtfilt(_B, _A, data, axis=2)
 
     def __getitem__(self, idx):
-        return self.data[idx], self.classes[idx]
+        x, cls = self.data[idx], self.classes[idx]
+        if self.split == "train":
+            # time shift
+            shift = np.random.randint(-10, 10)
+            x = torch.roll(x, shifts=shift, dims=-1)
+
+            # random scaling
+            scale = np.random.uniform(0.9, 1.1)
+            x = x * scale
+
+            # channel dropout
+            if np.random.rand() < 0.3:
+                ch = np.random.randint(0, x.size(0))
+                x[ch] = 0
+
+            # mixup with another sample
+            if np.random.rand() < 0.5:
+                j = np.random.randint(len(self))
+                lambda_ = np.random.beta(0.2, 0.2)
+                x2, cls2 = self.data[j], self.classes[j]
+                x = lambda_*x + (1-lambda_)*x2
+                cls = (lambda_*cls + (1-lambda_)*cls2).long()
+        return x, cls
+        
+        # for BxCxFxT
+        x, cls = self.data[idx], self.classes[idx]  # x: (C,T) or (C,F,T)
+
+        if self.split == "train":
+            # time shift (works for both shapes)
+            shift = np.random.randint(-10, 10)
+            x = torch.roll(x, shifts=shift, dims=-1)
+
+            # if TF-image, do SpecAugment masks
+            if x.ndim == 3:  # (C,F,T)
+                # freq‐mask
+                f = x.size(-2)
+                w = np.random.randint(1, int(0.2*f))
+                f0 = np.random.randint(0, f - w)
+                x[:, f0:f0+w, :] = 0
+                # time‐mask
+                t = x.size(-1)
+                w = np.random.randint(1, int(0.2*t))
+                t0 = np.random.randint(0, t - w)
+                x[:, :, t0:t0+w] = 0
+
+            # channel dropout (both shapes)
+            if np.random.rand() < 0.3:
+                ch = np.random.randint(0, x.size(0))
+                x[ch, ...] = 0
+
+            # mixup (both shapes)
+            if np.random.rand() < 0.5:
+                j = np.random.randint(len(self))
+                x2, cls2 = self.data[j], self.classes[j]
+                λ = np.random.beta(0.2, 0.2)
+                x   = λ * x   + (1 - λ) * x2
+                cls = (λ * cls + (1 - λ) * cls2).long()
+
+        return x, cls
 
     def __len__(self):
         return len(self.data)
