@@ -6,6 +6,7 @@ from modules.utils import evaluate_model  # Assuming this function exists and is
 import optuna
 from modules import EEGDataset  # Assuming this class exists and is correct
 import numpy as np
+from torch.utils.data import Subset, DataLoader
 
 
 class Trainer:
@@ -38,98 +39,154 @@ class Trainer:
         assert isinstance(self.optimizer, torch.optim.Optimizer), "Optimizer is not valid"
         assert isinstance(self.train_loader, DataLoader), "train_loader is not a valid DataLoader"
         assert isinstance(self.val_loader, DataLoader), "val_loader is not a valid DataLoader"
+        assert isinstance(self.target_loader, DataLoader), "target_loader is not a valid DataLoader"
 
-        # This warning is helpful, so we keep it.
+        # If you created separate optimizers in prepare_trial_run:
+        opt_FE, opt_F, opt_Fp = self.opt_FE, self.opt_F, self.opt_Fp
+        criterion = self.criterion
+
+        # Warn if final run
         if self.trial is None:
             print("Warning: self.trial is None. Assuming this is the final training phase.")
 
-        domain_loss_weight = 0.5
         for epoch in range(n_epochs):
             self.model.to(self.device)
             self.model.train()
 
-            avg_loss = 0
-            for x, y in self.train_loader:
-                x = x.to(self.device)
-                y = y.to(self.device)
-                y_labels = y[:, 0]
-                y_domains = y[:, 1]
+            avg_loss_label  = 0.0
+            avg_loss_domain = 0.0
+            correct_label   = 0
+            total           = 0
 
+            # ——— A) Source classification ———
+            for x_s, y_s in self.train_loader:
+                x_s      = x_s.to(self.device)
+                y_labels = y_s[:, 0].to(self.device)
 
-                y_pred_labels, y_pred_domain = self.model(x)
-                loss_label = self.criterion(y_pred_labels, y_labels)
-                loss_domain = self.criterion(y_pred_domain, y_domains)
-                loss = loss_label + domain_loss_weight * loss_domain
+                out1, _ = self.model(x_s)
+                loss_cls = criterion(out1, y_labels)
 
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                avg_loss += loss.item()
+                opt_FE.zero_grad(); opt_F.zero_grad()
+                loss_cls.backward()
+                opt_FE.step();  opt_F.step()
 
-            avg_loss = avg_loss / len(self.train_loader)
-            evaluation, _ = evaluate_model(self.model, self.val_loader, self.device)
+                avg_loss_label += loss_cls.item()
+                _, pred = out1.max(1)
+                correct_label  += (pred == y_labels).sum().item()
+                total          += y_labels.size(0)
 
+            # ——— B) Adversarial maximization for F' ———
+            for x_t, _ in self.target_loader:
+                x_t = x_t.to(self.device)
+
+                with torch.no_grad():
+                    logits_t, _ = self.model(x_t)
+                yhat = logits_t.argmax(dim=1)
+
+                # forward through F'
+                seq = self.model.feature_extractor(x_t)
+                out2 = self.model.Fp(seq)
+                top2 = out2.topk(2, dim=1).values
+                margin = top2[:, 1] - top2[:, 0]
+                loss_max = -(margin.mean())
+
+                opt_Fp.zero_grad()
+                loss_max.backward()
+                opt_Fp.step()
+
+            # ——— C) Alignment minimization for FE + F ———
+            for x_t, _ in self.target_loader:
+                x_t = x_t.to(self.device)
+
+                _, out2_t = self.model(x_t)
+                top2 = out2_t.topk(2, dim=1).values
+                margin = top2[:, 1] - top2[:, 0]
+                loss_mdd = margin.mean()
+
+                avg_loss_domain += loss_mdd.item()
+
+                opt_FE.zero_grad(); opt_F.zero_grad()
+                loss_mdd.backward()
+                opt_FE.step();  opt_F.step()
+
+            # ——— Compute metrics & optional saving ———
+            avg_loss_label  /= len(self.train_loader)
+            avg_loss_domain /= len(self.target_loader)
+            train_acc = 100.0 * correct_label / total
+
+            # validation
+            val_acc, _ = evaluate_model(self.model, self.val_loader, self.device)
+
+            # report/prune
             if self.trial is not None:
-                self.trial.report(evaluation, epoch)
+                self.trial.report(val_acc, epoch)
                 if self.trial.should_prune():
-                    # <<< FIX: You must raise the exception for it to work.
                     raise optuna.exceptions.TrialPruned()
 
+            # scheduler step
             if self.scheduler is not None:
-                self.scheduler.step(evaluation)
+                self.scheduler.step(val_acc)
 
             if should_print:
-                print(f"Epoch {epoch}/{n_epochs}, Validation Accuracy: {evaluation:.4f}, Avg Loss: {avg_loss:.4f}, lr: {self.optimizer.param_groups[0]['lr']}")
+                lr = opt_FE.param_groups[0]['lr']
+                print(f"Epoch {epoch}/{n_epochs}, Val Acc: {val_acc:.4f}, "
+                    f"Train Acc: {train_acc:.2f}%, "
+                    f"AvgLabLoss: {avg_loss_label:.4f}, AvgDomLoss: {avg_loss_domain:.4f}, lr: {lr}")
 
-            # <<< FIX: Moved saving outside the loop. You should only save the final model after all epochs.
-            if should_save and epoch % 5 == 0:
+            if should_save and (epoch + 1) % 5 == 0:
                 self.model.cpu()
                 torch.save(self.model.state_dict(), self.model_path)
                 self.model.to(self.device)
                 print(f"Model saved to {self.model_path}")
-
-    # <<< FIX: This entire method was refactored for clarity and correctness.
+                
+                
     def _prepare_data(self, is_trial, batch_size=None, window_length=None, stride_factor=3):
-        # This logic is now handled by the CustomTrainer override.
-        # This base method just handles creating datasets and dataloaders.
         if is_trial:
             assert isinstance(self.trial, optuna.Trial), "self.trial must be an Optuna.Trial during optimization."
-            # Suggest parameters if they are not provided (they will be provided by the CustomTrainer)
             window_length = window_length or self.trial.suggest_categorical("window_length", [128, 256, 640])
             batch_size = batch_size or self.trial.suggest_categorical("batch_size", [32, 64])
         else:
-            # For the final training, get the best parameters from the study.
             study = self._get_study()
             best_params = study.best_params
             window_length = window_length or best_params["window_length"]
             batch_size = batch_size or best_params["batch_size"]
 
         stride = int(window_length // stride_factor)
-
-        # <<< FIX: Simplified data loading. Load all relevant data once.
-        # Assuming EEGDataset can handle loading all data without a 'split' argument
-        # or that you handle train/val splits externally. The Concat+random_split is a good pattern.
-
-        # This assumed 'split' argument might need to be adjusted based on your EEGDataset implementation
-
-        dataset_train_full = EEGDataset(
+        
+        dataset_train = EEGDataset(
             self.data_path, window_length=window_length, stride=stride, data_fraction=self.data_fraction, hardcoded_mean=True, task=self.task, eeg_channels=self.eeg_channels
         )
 
-        dataset_val_full = EEGDataset(
+        dataset_val = EEGDataset(
             data_path=self.data_path, window_length=window_length, stride=stride, task=self.task, split="validation", read_labels=True, hardcoded_mean=True, eeg_channels=self.eeg_channels
         )
+        
+        target_subject = 29
 
-        self.train_loader = DataLoader(dataset_train_full, batch_size=batch_size, shuffle=True)
-        self.val_loader = DataLoader(dataset_val_full, batch_size=batch_size, shuffle=False)
+        is_target = (dataset_train.subjects == target_subject)
+        target_indices = torch.nonzero(is_target, as_tuple=True)[0].tolist()
+        source_indices = torch.nonzero(~is_target, as_tuple=True)[0].tolist()
+
+        self.train_loader = DataLoader(
+            Subset(dataset_train, source_indices),
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
+        )
+        self.target_loader = DataLoader(
+            Subset(dataset_train, target_indices),
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
+        )
+        
+        
+        self.val_loader = DataLoader(dataset_val, batch_size=batch_size, shuffle=False)
         print(f"Data prepared: Train batches={len(self.train_loader)}, Val batches={len(self.val_loader)}")
 
     def _objective(self, trial: optuna.Trial):
         self.trial = trial
 
-        # In your CustomTrainer, you will override a method that calls _prepare_data
-        # and then sets the model and optimizer.
-        # For this to work, we must call the custom preparation logic.
         self.prepare_trial_run()  # This method will be defined in CustomTrainer
 
         assert self.model is not None, "Model is not set. Ensure prepare_trial_run creates self.model."
