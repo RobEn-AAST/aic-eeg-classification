@@ -146,8 +146,8 @@ class EEGDataset(Dataset):
         subjects_np = np.array(subjects, dtype=np.int64)
 
         # preprocessing
-        data_array = self._band_pass_filter(data_array)  # Apply bandpass filter to all data at once
-        data_array = self.apply_car(data_array)  # Apply CAR
+        # data_array = self._band_pass_filter(data_array)  # Apply bandpass filter to all data at once
+        # data_array = self.apply_car(data_array)  # Apply CAR
         freqs = np.linspace(8, 32, 40)
         data_array = self.apply_cwt(data_array, _SFREQ, freqs=freqs)  # (B, C, len(freqs), T)
         data_array = self._normalize_signal(data_array, scalar_path=self.signal_scalar_path)
