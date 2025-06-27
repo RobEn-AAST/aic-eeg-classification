@@ -39,26 +39,21 @@ def evaluate_model(model: nn.Module, data_loader: DataLoader, device):
 
             # split ground truth
             y_label = y[:, 0]
-            y_subject = y[:, 1]
 
             # forward pass: two heads
-            label_logits, subject_logits = model(x)
+            label_logits = model(x)
 
             # predictions
             _, label_pred = torch.max(label_logits, dim=1)
-            _, subject_pred = torch.max(subject_logits, dim=1)
 
             # collect on CPU
             all_label_preds.extend(label_pred.cpu().numpy())
             all_label_trues.extend(y_label.cpu().numpy())
-            all_subj_preds.extend(subject_pred.cpu().numpy())
-            all_subj_trues.extend(y_subject.cpu().numpy())
 
     # compute accuracies
     label_accuracy = accuracy_score(all_label_trues, all_label_preds)
-    subject_accuracy = accuracy_score(all_subj_trues, all_subj_preds)
 
-    return float(label_accuracy), float(subject_accuracy)
+    return float(label_accuracy)
 
 
 

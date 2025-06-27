@@ -49,7 +49,7 @@ class EEGDataset(Dataset):
         read_labels=True,
         data_fraction=1.0,
         eeg_channels=["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"],
-        hardcoded_mean=False,
+        tmin=0,
         checkpoints_dir="./checkpoints",
     ):
         super().__init__()
@@ -120,7 +120,7 @@ class EEGDataset(Dataset):
             start, end = (trial - 1) * trial_length, trial * trial_length
             trial_data = arr[start:end]
             mask = trial_data[:, -1] == 1
-            T = trial_data[mask, :-1][175:].T # skip first 175 points
+            T = trial_data[mask, :-1][tmin:].T # skip first 175 points
             if T.shape[1] < self.window_length:
                 skipped_shit += 1
                 continue
@@ -146,24 +146,7 @@ class EEGDataset(Dataset):
         subjects_np = np.array(subjects, dtype=np.int64)
 
         # preprocessing
-        # data_array = self._band_pass_filter(data_array)
         data_array = self._normalize_signal(data_array, scalar_path=self.signal_scalar_path)
-
-        # # normalize bad way
-        # if task == "SSVEP":
-        #     self.mean = np.array([-1.0309, -0.4789, -0.6384], dtype=np.float32).reshape(1, -1, 1)
-        #     self.std = np.array([2178.9883, 1022.6290, 977.3783], dtype=np.float32).reshape(1, -1, 1)
-        # elif task == "MI":
-        #     self.mean = np.array([-2.4363, -1.8794, -5.8781, -1.6775, -5.1054, -1.5866, -2.0616, -0.6325], dtype=np.float32).reshape(1, -1, 1)
-        #     self.std = np.array([2598.5059, 1745.9202, 3957.9285, 2063.0957, 2298.0815, 1139.0936, 1412.2756, 1103.5853], dtype=np.float32).reshape(1, -1, 1)
-        # else:
-        #     raise ValueError(f"Unknown task {task}")
-
-        # if hardcoded_mean:
-        #     data_array = self._normalize(data_array)
-        #     print(f"data shape: {data_array.shape}, mean shape: {self.mean.shape}")
-        # else:
-        #     print("not normalizing...")
 
         self.data = torch.from_numpy(data_array.copy()).to(torch.float32)
         # ...after any label/subject postprocessing...
