@@ -306,6 +306,9 @@ class EEGDataset(Dataset):
 
         return x, cls
 
+    def __len__(self):
+        return len(self.data)
+
 
 
 # ... (rest of the file, including decode_label, etc.)
