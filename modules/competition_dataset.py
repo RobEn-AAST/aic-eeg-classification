@@ -146,9 +146,7 @@ class EEGDataset(Dataset):
         subjects_np = np.array(subjects, dtype=np.int64)
 
         # preprocessing
-        data_array = self.apply_car(data_array)  # Apply CAR
-        # freqs = np.linspace(8, 32, 20)
-        # data_array = self.apply_cwt(data_array, _SFREQ, freqs=freqs) # (B, C, len(freqs), T) 
+        # data_array = self._band_pass_filter(data_array)
         data_array = self._normalize_signal(data_array, scalar_path=self.signal_scalar_path)
 
         # # normalize bad way
@@ -215,6 +213,7 @@ class EEGDataset(Dataset):
         X: (B, C, T)
         returns X_car: same shape
         """
+        raise ValueError("PROVED TO BE BAD, LOWERING F SCORE AND VALIDATION ACCURACY")
         if self.split == "train":
             car_transformer = CarTransformer.fit(X)
             joblib.dump(car_transformer, self.car_transformer_path)
@@ -244,9 +243,6 @@ class EEGDataset(Dataset):
     def _convert_freq(self, data: np.ndarray):
         data = np.abs(rfft(data, axis=2))  # type:ignore
         return np.log1p(data)
-
-    def _avg_refrencing(self, data: np.ndarray):
-        return data - data.mean(axis=2, keepdims=True)
 
     def _band_pass_filter(self, data: np.ndarray):
         return signal.filtfilt(_B, _A, data, axis=2)
