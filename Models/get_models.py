@@ -16,16 +16,6 @@ def get_ssvep_model():
     return model
     
 def get_mi_model():
-    model = Classifier(
-        n_electrodes=3,
-        dropout=0.26211635308091535,
-        out_dim=2,
-        kernLength=256,
-        F1 = 32,
-        D = 3,
-        F2 = 32,
-        hidden_dim=256,
-        layer_dim=3,
-    )
-    
+    ts, w, clf = joblib.load("./checkpoints/mi/fb_rts_fsvm_model.joblib")
+
     return model
