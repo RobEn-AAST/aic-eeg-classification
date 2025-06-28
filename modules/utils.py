@@ -10,7 +10,7 @@ from optuna.distributions import IntUniformDistribution, FloatDistribution, Cate
 def get_closest_divisor(target: int, n=1750):
     n = n or 1750
 
-    divisors = [i for i in range(1, n+1) if n % i == 0]
+    divisors = [i for i in range(1, n + 1) if n % i == 0]
     closest = min(divisors, key=lambda x: abs(x - target))
     return closest
 
@@ -39,22 +39,26 @@ def evaluate_model(model: nn.Module, data_loader: DataLoader, device):
 
             # split ground truth
             y_label = y[:, 0]
+            y_subject = y[:, 1]
 
             # forward pass: two heads
-            label_logits = model(x)
+            label_logits, subject_logits = model(x)
 
             # predictions
             _, label_pred = torch.max(label_logits, dim=1)
+            _, subject_pred = torch.max(subject_logits, dim=1)
 
             # collect on CPU
             all_label_preds.extend(label_pred.cpu().numpy())
             all_label_trues.extend(y_label.cpu().numpy())
+            all_subj_preds.extend(subject_pred.cpu().numpy())
+            all_subj_trues.extend(y_subject.cpu().numpy())
 
     # compute accuracies
     label_accuracy = accuracy_score(all_label_trues, all_label_preds)
+    subject_accuracy = accuracy_score(all_subj_trues, all_subj_preds)
 
-    return float(label_accuracy)
-
+    return float(label_accuracy), float(subject_accuracy)
 
 
 def split_and_get_loaders(dataset: Dataset, batch_size: int, train_size: float = 0.8):
@@ -100,13 +104,13 @@ def split_and_get_loaders(dataset: Dataset, batch_size: int, train_size: float =
 
 def manual_write_study_params(study_name: str, storage: str):
     params = {
-        "window_length": 128,   # or 160
-        "stride": 2,            # between 2-3
-        "hidden_size": 128,     # 64-192 step 32
-        "num_layers": 2,        # 1-3
-        "dropout": 0.2,         # 0.0-0.4
-        "lr": 0.01,            # 3e-4 to 3e-2
-        "batch_size": 32,       # 32 or 64
+        "window_length": 128,  # or 160
+        "stride": 2,  # between 2-3
+        "hidden_size": 128,  # 64-192 step 32
+        "num_layers": 2,  # 1-3
+        "dropout": 0.2,  # 0.0-0.4
+        "lr": 0.01,  # 3e-4 to 3e-2
+        "batch_size": 32,  # 32 or 64
     }
 
     try:
@@ -141,7 +145,7 @@ def manual_write_study_params(study_name: str, storage: str):
     return study.best_params
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print(get_closest_divisor(160))
     print(get_closest_divisor(200))
     print(get_closest_divisor(300))
