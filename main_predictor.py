@@ -1,139 +1,139 @@
-import torch, numpy as np, pandas as pd
+import torch
+import numpy as np
+import pandas as pd
 from tqdm import tqdm
 import torch.nn.functional as F
 from modules.competition_dataset import EEGDataset, decode_label, position_decode
-from Models import get_mi_model, get_ssvep_model
-import joblib
-from pyriemann.estimation import Covariances
-from scipy.signal import sosfiltfilt, butter
+from sklearn.metrics import accuracy_score, classification_report
+from Models import FilterBankRTSClassifier  # assume this is defined in module
 
+# Device and common settings
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-split = "validation"
+SPLIT = "validation"           # public variable for data split (e.g., "train", "validation", "test")
+TRAIN_SPLIT = "train"          # split used for training MI model
 data_path = "./data/mtcaic3"
-batch_size = 64
 confidence_exponent = 2.0
 
-# Filter bank for MI
-bands = [(8, 12), (12, 16), (16, 20), (20, 24), (24, 30)]
-sos_bands = [butter(4, (l / 125, h / 125), btype="bandpass", output="sos") for l, h in bands]
+# -----------------------------------------------------------------------------
+# Motor Imagery pipeline with FilterBankRTSClassifier
+# -----------------------------------------------------------------------------
+# MI-specific data settings
+MI_BATCH_SIZE = 64
+MI_WINDOW_LENGTH = 250   # from Optuna best trial
+MI_STRIDE = 250          # as tuned
+MI_TMIN = 0
+MI_CHANNELS = ['FZ', 'CZ', 'PZ', 'PO7', 'OZ']
+# Classifier hyperparameters from Optuna
+MI_FS = 125
+MI_FILTER_ORDER = 3
+MI_N_ESTIMATORS = 200
+MI_MAX_DEPTH = None
+MI_MIN_SAMPLES_SPLIT = 6
+MI_MIN_SAMPLES_LEAF = 2
+MI_MAX_FEATURES = 'sqrt'
 
-def compute_fb_covs(X):
-    """X: (n_trials, C, T) → fb_covs: (n_trials, B, C, C)"""
-    n, C, _ = X.shape
-    B = len(sos_bands)
-    fb_covs = np.zeros((n, B, C, C))
-    for i, sos in enumerate(sos_bands):
-        Xf = sosfiltfilt(sos, X, axis=2)
-        fb_covs[:, i] = Covariances(estimator="lwf").transform(Xf)
-    return fb_covs
 
-def predict_fb_rts(ts, w, clf, X):
-    """Given fitted ts, weights w, and clf, predict on new X."""
-    fb_covs = compute_fb_covs(X)
-    n, B, C, _ = fb_covs.shape
-    covs_flat = fb_covs.reshape(n * B, C, C)
-    Z = ts.transform(covs_flat).reshape(n, B, -1)
-    Z_weighted = np.concatenate([np.sqrt(w[i]) * Z[:, i, :] for i in range(B)], axis=1)
-    return clf.predict(Z_weighted)
+def run_mi_task():
+    """Train and infer on the Motor Imagery task and return a list of {id, label}."""
+    # Build lookup for MI
+    df_csv = pd.read_csv(f"{data_path}/{SPLIT}.csv")
+    lookup = {
+        (row.task, str(row.subject_id), str(row.trial_session), str(row.trial)): row.id
+        for row in df_csv.itertuples() if row.task == "MI"
+    }
 
-def run_mi_task(lookup, results, split=split):
-    # Load saved Riemannian filter-bank model
-    ts, w, clf = joblib.load("./checkpoints/mi/fb_rts_fsvm_model.joblib")
-    eeg_channels = [
-        "FZ",
-        "C3",
-        "CZ",
-        "C4",
-        "PO7",
-        "PO8",
-    ]
-    window_length = 1000
-    tmin = 250
-    stride = window_length // 2
-    ds = EEGDataset(
-        data_path=data_path,
-        window_length=window_length,
-        tmin=tmin,
-        stride=stride,
-        domain="time",
+    # Load train and val EEG data
+    ds_train = EEGDataset(
+        data_path,
+        window_length=MI_WINDOW_LENGTH,
+        stride=MI_STRIDE,
         task="MI",
-        split=split,
-        read_labels=False,
+        split=TRAIN_SPLIT,
         data_fraction=1,
-        eeg_channels=eeg_channels,
+        tmin=MI_TMIN,
+        eeg_channels=MI_CHANNELS,
     )
-    loader = torch.utils.data.DataLoader(ds, batch_size, shuffle=False)
-    all_X = []
-    for x, _ in tqdm(loader, desc="MI inference"):
-        all_X.append(x.numpy())
-    all_X = np.concatenate(all_X, axis=0)  # [N, C, T]
-    preds = predict_fb_rts(ts, w, clf, all_X)
-    codes = ds.labels.numpy()
-    for code in sorted(set(codes)):
-        inds = np.where(codes == code)[0]
-        if len(inds) == 0:
-            continue
-        pred = preds[inds[2]] if len(inds) > 2 else preds[inds[0]]
-        label = decode_label(int(pred), "MI")
+    X_train = np.stack([x.numpy() for x, _ in ds_train])
+    y_train = np.array([label[0] for _, label in ds_train])
+
+    ds_val = EEGDataset(
+        data_path,
+        window_length=MI_WINDOW_LENGTH,
+        stride=MI_STRIDE,
+        task="MI",
+        split=SPLIT,
+        data_fraction=1,
+        tmin=MI_TMIN,
+        eeg_channels=MI_CHANNELS,
+    )
+    X_val = np.stack([x.numpy() for x, _ in ds_val])
+    y_val = np.array([label[0] for _, label in ds_val])
+
+    # Initialize and fit classifier
+    clf = FilterBankRTSClassifier(
+        fs=MI_FS,
+        order=MI_FILTER_ORDER,
+        n_estimators=MI_N_ESTIMATORS,
+        max_depth=MI_MAX_DEPTH,
+        min_samples_split=MI_MIN_SAMPLES_SPLIT,
+        min_samples_leaf=MI_MIN_SAMPLES_LEAF,
+        max_features=MI_MAX_FEATURES,
+        class_weight="balanced",
+        n_jobs=-1,
+    )
+    clf.fit(X_train, y_train)
+
+    # Predict on validation set
+    y_pred = clf.predict(X_val)
+
+    # Optionally print metrics
+    val_acc = accuracy_score(y_val, y_pred)
+    print(f"MI Validation accuracy: {val_acc:.4f}")
+    print(classification_report(y_val, y_pred))
+
+    # Prepare submission entries
+    results = []
+    codes = ds_val.labels.numpy()
+    for code, pred in zip(codes, y_pred):
         subj, sess, trial = position_decode(int(code))
         key = ("MI", subj, sess, trial)
         csv_id = lookup.get(key)
         if csv_id is not None:
-            results.append({"id": csv_id, "label": label})
-        else:
-            raise ValueError(f"{key} IS NOT FOUND: {csv_id}")
+            results.append({"id": csv_id, "label": decode_label(int(pred), "MI")})
+    return results
 
-def run_ssvep_task(lookup, results, split=split):
-    # Load saved SSVEP model (PyTorch neural net)
-    eeg_channels = ["PO8", "OZ", "PZ"]
-    window_length = 256  # Adjust as needed for your SSVEP model
-    tmin = 0
-    stride = window_length // 2
-    model = get_ssvep_model().to(device)
-    model.load_state_dict(torch.load("./checkpoints/ssvep/models/ssvep_PO8_OZ_PZ.pth", map_location=device))
-    model.eval()
-    ds = EEGDataset(
-        data_path=data_path,
-        window_length=window_length,
-        tmin=tmin,
-        stride=stride,
-        domain="time",
-        task="SSVEP",
-        split=split,
-        read_labels=False,
-        data_fraction=1,
-        eeg_channels=eeg_channels,
-    )
-    loader = torch.utils.data.DataLoader(ds, batch_size, shuffle=False)
-    all_logits = np.concatenate([model(x.to(device)).cpu().detach().numpy() for x, _ in tqdm(loader, desc="SSVEP inference")], axis=0)
-    codes = ds.labels.numpy()
-    for code in sorted(set(codes)):
-        inds = np.where(codes == code)[0]
-        wins = torch.from_numpy(np.stack([all_logits[i] for i in inds])[2:3])
-        if wins.numel() == 0:
-            continue
-        probs = F.softmax(wins, dim=1)
-        conf = probs.max(1).values ** confidence_exponent
-        avg = (wins * conf.unsqueeze(1)).sum(0) / (conf.sum() or 1)
-        pred = decode_label(int(avg.argmax()), "SSVEP")
-        subj, sess, trial = position_decode(int(code))
-        key = ("SSVEP", subj, sess, trial)
-        csv_id = lookup.get(key)
-        if csv_id is not None:
-            results.append({"id": csv_id, "label": pred})
-        else:
-            raise ValueError(f"{key} IS NOT FOUND: {csv_id}")
+# -----------------------------------------------------------------------------
+# SSVEP pipeline with constant empty predictions
+# -----------------------------------------------------------------------------
+SSVEP_BATCH_SIZE = 64
+SSVEP_WINDOW_LENGTH = 512
+SSVEP_STRIDE = SSVEP_WINDOW_LENGTH // 4
 
-if __name__ == "__main__":
-    # build a lookup that includes task
-    df = pd.read_csv(f"{data_path}/{split}.csv")
-    lookup = {(row.task, str(row.subject_id), str(row.trial_session), str(row.trial)): row.id for row in df.itertuples()}
 
+def run_ssvep_task():
+    """Generate SSVEP submissions with empty labels for each trial ID."""
+    # Build lookup for SSVEP
+    df_csv = pd.read_csv(f"{data_path}/{SPLIT}.csv")
+    lookup = {
+        (row.task, str(row.subject_id), str(row.trial_session), str(row.trial)): row.id
+        for row in df_csv.itertuples() if row.task == "SSVEP"
+    }
+
+    # Iterate through every SSVEP trial code, assign empty label
     results = []
-    run_mi_task(lookup, results)
-    run_ssvep_task(lookup, results)
+    for key, csv_id in lookup.items():
+        results.append({"id": csv_id, "label": ""})
+    return results
 
-    # save one combined CSV
+# -----------------------------------------------------------------------------
+# Main execution: combine and save both tasks
+# -----------------------------------------------------------------------------
+if __name__ == "__main__":
+    mi_results = run_mi_task()
+    ssvep_results = run_ssvep_task()
+
+    # Combine and save to CSV
+    all_results = mi_results + ssvep_results
     out = "submission.csv"
-    pd.DataFrame(results).sort_values("id").to_csv(out, index=False)
+    pd.DataFrame(all_results).sort_values("id").to_csv(out, index=False)
     print(f"Saved {out}")
