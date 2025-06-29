@@ -1,2 +1,1 @@
-from .competition_dataset import EEGDataset, decode_label, position_decode
-from .trainer import Trainer
+from .moabb_dataset import CompetitionDataset, load_combined_moabb_data
