@@ -31,7 +31,14 @@ class CompetitionDataset(BaseDataset):
         self.split = split
 
     def _get_single_subject_data(self, subject):
-        """Return data for one subject - THIS IS THE KEY METHOD"""
+        """
+            Return data for one subject - THIS IS THE KEY METHOD
+            tips for Motor Imagery:
+                include C3, CZ, C4
+                may include FZ, PZ
+                don't include PO7, PO8, Oz
+
+        """
         ch_names = ["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"]
         moabb_channels = ["Fz", "C3", "Cz", "C4", "Pz", "PO7", "Oz", "PO8"]
         if self.paradigm == "ssvep":
@@ -222,6 +229,15 @@ def load_combined_moabb_data(datasets, paradigm_config=None, subjects_per_datase
 
         current_subject_offset = next_offset
 
+    # drop to match
+    tmin = paradigm_config['tmin']
+    tmax =paradigm_config['tmax']
+    sfreq = paradigm_config['resample']
+    max_possible_value = int((tmax - tmin) * sfreq)
+
+    for i, x in enumerate(all_X):
+        all_X[i] = x[:, :, :max_possible_value]
+
     # Combine all data
     combined_X = np.concatenate(all_X, axis=0)
     combined_class_labels = np.array(all_class_labels)
@@ -299,14 +315,13 @@ def analyze_dataset_channels(datasets):
     return {"dataset_channels": dataset_channels, "channel_frequencies": dict(channel_counts), "common_channels": [ch for ch, count in channel_counts.items() if count == len(datasets)]}
 
 
-if __name__ == "__main__":
+def main():
     # Example usage:
+    mi_channels = ["Fz", "C3", "Cz", "C4", "Pz"] 
     datasets = [    
-        # Cho2017(),                   # 52 subjects     ! could not read bytes
-        Weibo2014(),                # 10 subjects, 64 channels  
         PhysionetMI(imagined=True),  # 109 subjects  
-        BNCI2014_001(),             # 9 subjects  
-        # CompetitionDataset(),
+        Weibo2014(),                # 10 subjects, 64 channels  
+        CompetitionDataset(),
     ]
     # val_datasets = [CompetitionDataset(split="validation")]
 
@@ -316,14 +331,22 @@ if __name__ == "__main__":
     X, class_labels, domain_labels, info = load_combined_moabb_data(
         datasets=datasets,
         paradigm_config={
-            "channels": ["Cz", "C3", "C4", "Fz", "Pz"],
-            "tmin": 0.0,
+            "channels": mi_channels,
+            "tmin": 1.0,
             "tmax": 4.0,
             "resample": 250,
         },
+        subjects_per_dataset={
+            'PhysionetMI': [1, 2, 3],
+            'Weibo2014': [1, 2, 3],
+            'CompetitionDataset': [1, 2, 3],
+        }
     )
 
     # Create combined labels for DANN
     combined_labels = np.column_stack([class_labels, domain_labels])
     print(f"Combined labels shape: {combined_labels.shape}")
     print(f"Sample combined labels: {combined_labels[:5]}")
+
+if __name__ == "__main__":
+    main()
