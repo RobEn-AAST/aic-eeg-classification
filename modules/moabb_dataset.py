@@ -1,9 +1,7 @@
 # %%
 # for data info http://moabb.neurotechx.com/docs/dataset_summary.html
 import moabb
-from moabb.datasets import BNCI2014_001  # 250 hz
-from moabb.datasets import BNCI2014_004  # 250 hz
-from moabb.datasets import Zhou2016  # 250 hz
+from moabb.datasets import PhysionetMI, Cho2017, BNCI2014_001, Weibo2014
 from moabb.paradigms import LeftRightImagery
 from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
@@ -17,6 +15,7 @@ import os
 
 # %%
 data_path = "/home/zeyadcode/Workspace/ai_projects/eeg_detection/data/mtcaic3"
+
 
 class CompetitionDataset(BaseDataset):
     def __init__(self, split="train"):
@@ -33,14 +32,12 @@ class CompetitionDataset(BaseDataset):
 
     def _get_single_subject_data(self, subject):
         """Return data for one subject - THIS IS THE KEY METHOD"""
+        ch_names = ["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"]
+        moabb_channels = ["Fz", "C3", "Cz", "C4", "Pz", "PO7", "Oz", "PO8"]
         if self.paradigm == "ssvep":
-            ch_names = ["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"]
-            moabb_channels = ["FZ", "C3", "Cz", "C4", "PZ", "PO7", "OZ", "PO8"]
             task = "SSVEP"
         elif self.paradigm == "imagery":
             task = "MI"
-            ch_names = ["C3", "C4", "CZ"]
-            moabb_channels = ["C3", "C4", "Cz"]
         else:
             raise ValueError(f"got unexpected paradigm {self.paradigm}")
 
@@ -113,7 +110,7 @@ class CompetitionDataset(BaseDataset):
 
             sessions[str(session_id)] = {"0": raw}
 
-        if sessions  is None:
+        if sessions is None:
             print(f"\n\n\nWARNING TASK DF EMPTY {subject} AT ROW {subject_row} AT SPLIT {self.split}\n\n\n")
             return {"0": {"0": None}}
         else:
@@ -135,7 +132,7 @@ class CompetitionDataset(BaseDataset):
                     subject_paths.append(eeg_file)
 
         return subject_paths
-    
+
 
 def load_combined_moabb_data(datasets, paradigm_config=None, subjects_per_dataset=None):
     """
@@ -240,16 +237,86 @@ def load_combined_moabb_data(datasets, paradigm_config=None, subjects_per_datase
     return combined_X, combined_class_labels, combined_domain_labels, dataset_info
 
 
+def analyze_dataset_channels(datasets):
+    """
+    Analyze channels across multiple MOABB datasets and generate a comprehensive report.
+
+    Parameters
+    ----------
+    datasets : list of BaseDataset instances
+        List of MOABB dataset objects to analyze
+
+    Returns
+    -------
+    dict
+        Dictionary containing channel analysis results
+    """
+    from collections import Counter
+
+    # Dictionary to store channels for each dataset
+    dataset_channels = {}
+    all_channels = []
+    # Array to store the formatted strings for printing at the end
+    dataset_channel_strings = []
+
+    # Step 1: Extract channels from each dataset (no printing during loop)
+    for dataset in datasets:
+        dataset_name = type(dataset).__name__
+
+        try:
+            # Get data for first subject to extract channel info
+            subject_data = dataset.get_data([dataset.subject_list[0]])[dataset.subject_list[0]]
+            first_session = list(subject_data.keys())[0]
+            first_run = list(subject_data[first_session].keys())[0]
+            raw = subject_data[first_session][first_run]
+
+            # Extract EEG channels only
+            raw.pick_types(eeg=True)
+            channels = [ch for ch in raw.info["ch_names"] if ch.upper().find("EEG") == -1]
+
+            dataset_channels[dataset_name] = channels
+            all_channels.extend(channels)
+
+            # Store the formatted string instead of printing immediately
+            dataset_channel_strings.append(f"{dataset_name} - {', '.join(sorted(channels))}")
+
+        except Exception as e:
+            dataset_channels[dataset_name] = []
+            dataset_channel_strings.append(f"{dataset_name} - Error: {e}")
+
+    # Step 2: Print all dataset-channel strings together at the end
+    for dataset_string in dataset_channel_strings:
+        print(dataset_string)
+
+    print()  # Empty line before common channels report
+
+    # Step 3: Count channel frequencies and print minimal table
+    channel_counts = Counter(all_channels)
+
+    for channel, count in channel_counts.most_common():
+        print(f"{channel} {count}/{len(datasets)}")
+
+    return {"dataset_channels": dataset_channels, "channel_frequencies": dict(channel_counts), "common_channels": [ch for ch, count in channel_counts.items() if count == len(datasets)]}
+
+
 if __name__ == "__main__":
     # Example usage:
-    # datasets = [BNCI2014_001(), BNCI2014_004(), Zhou2016(), CompetitionDataset(split="train")]
-    datasets = [CompetitionDataset(split="validation")]
+    datasets = [    
+        # Cho2017(),                   # 52 subjects     ! could not read bytes
+        Weibo2014(),                # 10 subjects, 64 channels  
+        PhysionetMI(imagined=True),  # 109 subjects  
+        BNCI2014_001(),             # 9 subjects  
+        # CompetitionDataset(),
+    ]
+    # val_datasets = [CompetitionDataset(split="validation")]
+
+    # analyze_dataset_channels(datasets)
 
     # Load combined data
     X, class_labels, domain_labels, info = load_combined_moabb_data(
         datasets=datasets,
         paradigm_config={
-            "channels": ["Cz", "C3", "C4"],
+            "channels": ["Cz", "C3", "C4", "Fz", "Pz"],
             "tmin": 0.0,
             "tmax": 4.0,
             "resample": 250,
