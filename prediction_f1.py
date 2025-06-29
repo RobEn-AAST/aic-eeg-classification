@@ -2,7 +2,11 @@
 import pandas as pd
 from sklearn.metrics import accuracy_score
 
-split = "test"
+# ---- Set which tasks to evaluate here ----
+TASKS_TO_EVAL = ["MI", "SSVEP"]  # Options: ["MI"], ["SSVEP"], or ["MI", "SSVEP"]
+# ------------------------------------------
+
+split = "validation"
 PRED_CSV = "./submission.csv"
 TRUE_CSV = f"./data/mtcaic3/{split}.csv"
 
@@ -15,13 +19,14 @@ def main():
         raise ValueError("No matching IDs found between prediction and truth.")
 
     acc = {}
-    for task in ["MI","SSVEP"]:
+    for task in TASKS_TO_EVAL:
         sub = df[df.task == task]
         acc[task] = accuracy_score(sub.label, sub.pred)
         print(f"{task} accuracy: {acc[task]:.4f}")
 
-    combined = (acc["MI"] + acc["SSVEP"]) / 2
-    print(f"\nCombined (½·(MI+SSVEP)): {combined:.4f}")
+    if len(TASKS_TO_EVAL) == 2:
+        combined = (acc["MI"] + acc["SSVEP"]) / 2
+        print(f"\nCombined (½·(MI+SSVEP)): {combined:.4f}")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

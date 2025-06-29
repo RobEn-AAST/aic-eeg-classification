@@ -1,75 +1,42 @@
 import torch
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-import torch.nn.functional as F
 from modules.competition_dataset import EEGDataset, decode_label, position_decode
-from sklearn.metrics import accuracy_score, classification_report
-from Models import FilterBankRTSClassifier  # assume this is defined in module
+from Models import FilterBankRTSClassifier
 
-# Device and common settings
+# Device and public variables
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-SPLIT = "validation"           # public variable for data split (e.g., "train", "validation", "test")
-TRAIN_SPLIT = "train"          # split used for training MI model
-data_path = "./data/mtcaic3"
-confidence_exponent = 2.0
+SPLIT = "test"  #IW
+TRAIN_SPLIT = "train"  # split for training
+DATA_PATH = "./data/mtcaic3"
 
 # -----------------------------------------------------------------------------
 # Motor Imagery pipeline with FilterBankRTSClassifier
 # -----------------------------------------------------------------------------
-# MI-specific data settings
+# MI-specific settings (Optuna best)
 MI_BATCH_SIZE = 64
-MI_WINDOW_LENGTH = 250   # from Optuna best trial
-MI_STRIDE = 250          # as tuned
-MI_TMIN = 0
-MI_CHANNELS = ['FZ', 'CZ', 'PZ', 'PO7', 'OZ']
-# Classifier hyperparameters from Optuna
-MI_FS = 125
+MI_WINDOW_LENGTH = 1000
+MI_STRIDE = 85
+MI_TMIN = 60
+MI_CHANNELS = ["FZ", "CZ", "PZ", "PO7", "OZ"]
+MI_FS = 100
 MI_FILTER_ORDER = 3
-MI_N_ESTIMATORS = 200
+MI_N_ESTIMATORS = 300
 MI_MAX_DEPTH = None
-MI_MIN_SAMPLES_SPLIT = 6
-MI_MIN_SAMPLES_LEAF = 2
-MI_MAX_FEATURES = 'sqrt'
+MI_MIN_SAMPLES_SPLIT = 7
+MI_MIN_SAMPLES_LEAF = 3
+MI_MAX_FEATURES = "sqrt"
 
 
 def run_mi_task():
-    """Train and infer on the Motor Imagery task and return a list of {id, label}."""
-    # Build lookup for MI
-    df_csv = pd.read_csv(f"{data_path}/{SPLIT}.csv")
-    lookup = {
-        (row.task, str(row.subject_id), str(row.trial_session), str(row.trial)): row.id
-        for row in df_csv.itertuples() if row.task == "MI"
-    }
+    # Build lookup for submission IDs
+    df_meta = pd.read_csv(f"{DATA_PATH}/{SPLIT}.csv")
+    lookup = {(row.task, str(row.subject_id), str(row.trial_session), str(row.trial)): row.id for row in df_meta.itertuples() if row.task.upper() == "MI"}
 
-    # Load train and val EEG data
-    ds_train = EEGDataset(
-        data_path,
-        window_length=MI_WINDOW_LENGTH,
-        stride=MI_STRIDE,
-        task="MI",
-        split=TRAIN_SPLIT,
-        data_fraction=1,
-        tmin=MI_TMIN,
-        eeg_channels=MI_CHANNELS,
-    )
+    # Load and train classifier
+    ds_train = EEGDataset(DATA_PATH, MI_WINDOW_LENGTH, MI_STRIDE, task="MI", split=TRAIN_SPLIT, read_labels=True, data_fraction=1, tmin=MI_TMIN, eeg_channels=MI_CHANNELS)
     X_train = np.stack([x.numpy() for x, _ in ds_train])
     y_train = np.array([label[0] for _, label in ds_train])
-
-    ds_val = EEGDataset(
-        data_path,
-        window_length=MI_WINDOW_LENGTH,
-        stride=MI_STRIDE,
-        task="MI",
-        split=SPLIT,
-        data_fraction=1,
-        tmin=MI_TMIN,
-        eeg_channels=MI_CHANNELS,
-    )
-    X_val = np.stack([x.numpy() for x, _ in ds_val])
-    y_val = np.array([label[0] for _, label in ds_val])
-
-    # Initialize and fit classifier
     clf = FilterBankRTSClassifier(
         fs=MI_FS,
         order=MI_FILTER_ORDER,
@@ -83,56 +50,88 @@ def run_mi_task():
     )
     clf.fit(X_train, y_train)
 
-    # Predict on validation set
-    y_pred = clf.predict(X_val)
-
-    # Optionally print metrics
-    val_acc = accuracy_score(y_val, y_pred)
-    print(f"MI Validation accuracy: {val_acc:.4f}")
-    print(classification_report(y_val, y_pred))
-
-    # Prepare submission entries
+    # Inference
+    ds_inf = EEGDataset(DATA_PATH, MI_WINDOW_LENGTH, MI_STRIDE, task="MI", split=SPLIT, read_labels=False, data_fraction=1, tmin=MI_TMIN, eeg_channels=MI_CHANNELS)
+    windows = [x.numpy() for x, _ in ds_inf]
+    codes = ds_inf.labels.numpy()
+    X_windows = np.stack(windows)
+    probs = clf.predict_proba(X_windows)
     results = []
-    codes = ds_val.labels.numpy()
-    for code, pred in zip(codes, y_pred):
+    for code in sorted(np.unique(codes)):
+        idxs = np.where(codes == code)[0]
+        avg_prob = probs[idxs].mean(axis=0)
+        pred = int(np.argmax(avg_prob))
         subj, sess, trial = position_decode(int(code))
         key = ("MI", subj, sess, trial)
-        csv_id = lookup.get(key)
-        if csv_id is not None:
-            results.append({"id": csv_id, "label": decode_label(int(pred), "MI")})
+        if key not in lookup:
+            raise RuntimeError(f"ID not found for MI key {key}")
+        results.append({"id": lookup[key], "label": decode_label(pred, "MI")})
     return results
 
+
 # -----------------------------------------------------------------------------
-# SSVEP pipeline with constant empty predictions
+# SSVEP pipeline with FilterBankRTSClassifier
 # -----------------------------------------------------------------------------
-SSVEP_BATCH_SIZE = 64
-SSVEP_WINDOW_LENGTH = 512
-SSVEP_STRIDE = SSVEP_WINDOW_LENGTH // 4
+# SSVEP-specific settings (Optuna best)
+SS_WINDOW_LENGTH = 1000
+SS_STRIDE = 85
+SS_TMIN = 60
+SS_CHANNELS = ["C4", "CZ", "PZ"]
+SS_FS = 100
+SS_FILTER_ORDER = 3
+SS_N_ESTIMATORS = 300
+SS_MAX_DEPTH = None
+SS_MIN_SAMPLES_SPLIT = 7
+SS_MIN_SAMPLES_LEAF = 3
 
 
 def run_ssvep_task():
-    """Generate SSVEP submissions with empty labels for each trial ID."""
-    # Build lookup for SSVEP
-    df_csv = pd.read_csv(f"{data_path}/{SPLIT}.csv")
-    lookup = {
-        (row.task, str(row.subject_id), str(row.trial_session), str(row.trial)): row.id
-        for row in df_csv.itertuples() if row.task == "SSVEP"
-    }
+    # Build lookup for submission IDs
+    df_meta = pd.read_csv(f"{DATA_PATH}/{SPLIT}.csv")
+    lookup = {(row.task, str(row.subject_id), str(row.trial_session), str(row.trial)): row.id for row in df_meta.itertuples() if row.task.upper() == "SSVEP"}
 
-    # Iterate through every SSVEP trial code, assign empty label
+    # Load and train classifier
+    ds_train = EEGDataset(DATA_PATH, SS_WINDOW_LENGTH, SS_STRIDE, task="SSVEP", split=TRAIN_SPLIT, read_labels=True, data_fraction=1, tmin=SS_TMIN, eeg_channels=SS_CHANNELS)
+    X_train = np.stack([x.numpy() for x, _ in ds_train])
+    y_train = np.array([label[0] for _, label in ds_train])
+    clf = FilterBankRTSClassifier(
+        fs=SS_FS,
+        order=SS_FILTER_ORDER,
+        n_estimators=SS_N_ESTIMATORS,
+        max_depth=SS_MAX_DEPTH,
+        min_samples_split=SS_MIN_SAMPLES_SPLIT,
+        min_samples_leaf=SS_MIN_SAMPLES_LEAF,
+        max_features="sqrt",
+        class_weight="balanced",
+        n_jobs=-1,
+    )
+    clf.fit(X_train, y_train)
+
+    # Inference
+    ds_inf = EEGDataset(DATA_PATH, SS_WINDOW_LENGTH, SS_STRIDE, task="SSVEP", split=SPLIT, read_labels=False, data_fraction=1, tmin=SS_TMIN, eeg_channels=SS_CHANNELS)
+    windows = [x.numpy() for x, _ in ds_inf]
+    codes = ds_inf.labels.numpy()
+    X_windows = np.stack(windows)
+    probs = clf.predict_proba(X_windows)
     results = []
-    for key, csv_id in lookup.items():
-        results.append({"id": csv_id, "label": ""})
+    for code in sorted(np.unique(codes)):
+        idxs = np.where(codes == code)[0]
+        avg_prob = probs[idxs].mean(axis=0)
+        pred = int(np.argmax(avg_prob))
+        subj, sess, trial = position_decode(int(code))
+        key = ("SSVEP", subj, sess, trial)
+        if key not in lookup:
+            raise RuntimeError(f"ID not found for SSVEP key {key}")
+        results.append({"id": lookup[key], "label": decode_label(pred, "SSVEP")})
     return results
 
+
 # -----------------------------------------------------------------------------
-# Main execution: combine and save both tasks
+# Main: combine and save submission.csv
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     mi_results = run_mi_task()
     ssvep_results = run_ssvep_task()
-
-    # Combine and save to CSV
     all_results = mi_results + ssvep_results
     out = "submission.csv"
     pd.DataFrame(all_results).sort_values("id").to_csv(out, index=False)

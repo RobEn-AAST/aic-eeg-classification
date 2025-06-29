@@ -8,11 +8,14 @@ from sklearn.feature_selection import mutual_info_classif
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 
+#  for motor imagery
 # [I 2025-06-28 19:47:51,512] Trial 30 finished with value: 0.6598790349742903 and parameters: {'tmin': 60, 'filter_order': 3, 'fs': 100, 'n_estimators': 300, 'min_samples_split': 7, 'min_samples_leaf': 3}. Best is trial 30 with value: 0.6598790349742903.
 
+# for ssvep if we will use it
+
 class FilterBankRTSClassifier(BaseEstimator, ClassifierMixin):
-    def __init__(self, fs=250, order=4, n_estimators=100, max_depth=None, min_samples_split=2, min_samples_leaf=1, max_features="sqrt", class_weight="balanced", n_jobs=-1):
-        self.bands = [(8, 12), (12, 16), (16, 20), (20, 24), (24, 30)]
+    def __init__(self, fs=250, order=4, n_estimators=100, bands=None, max_depth=None, min_samples_split=2, min_samples_leaf=1, max_features="sqrt", class_weight="balanced", n_jobs=-1):
+        self.bands = [(8, 12), (12, 16), (16, 20), (20, 24), (24, 30)] if bands is None else bands
         self.fs = fs
         self.order = order
         self.n_estimators = n_estimators
