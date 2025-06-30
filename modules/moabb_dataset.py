@@ -1,8 +1,9 @@
 # %%
 # for data info http://moabb.neurotechx.com/docs/dataset_summary.html
 import moabb
-from moabb.datasets import PhysionetMI, Cho2017, BNCI2014_001, Weibo2014
-from moabb.paradigms import LeftRightImagery
+from moabb.datasets import PhysionetMI, Cho2017, BNCI2014_001, Weibo2014, Lee2019_MI  # mi
+from moabb.datasets import Wang2016, Nakanishi2015, MAMEM3, MAMEM2, MAMEM1, Lee2019_SSVEP, Kalunga2016  # ssvep
+from moabb.paradigms import LeftRightImagery, SSVEP
 from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
 import pandas as pd
@@ -18,25 +19,31 @@ data_path = "/home/zeyadcode/Workspace/ai_projects/eeg_detection/data/mtcaic3"
 
 
 class CompetitionDataset(BaseDataset):
-    def __init__(self, split="train"):
+    def __init__(self, split="train", paradigm_type="imagery"):
+        if paradigm_type == "ssvep":
+            events = {"7": 1, "8": 2, "10": 3, "13": 4}
+        else:
+            events = {"left_hand": 1, "right_hand": 2}
+
         super().__init__(
-            subjects=list(range(1, 31)),  # List of subject IDs
-            sessions_per_subject=1,  # Number of sessions per subject
-            events={"left_hand": 1, "right_hand": 2},
+            subjects=list(range(1, 31)),
+            sessions_per_subject=1,
+            events=events,
             code="CompetitionDataset",
-            interval=[0, 4],  # Time interval for trials
-            paradigm="imagery",  # "ssvep" or "imagery" or "p300"
+            interval=[0, 4],
+            paradigm=paradigm_type,
             doi=None,
         )
         self.split = split
+        self.paradigm_type = paradigm_type
 
     def _get_single_subject_data(self, subject):
         """
-            Return data for one subject - THIS IS THE KEY METHOD
-            tips for Motor Imagery:
-                include C3, CZ, C4
-                may include FZ, PZ
-                don't include PO7, PO8, Oz
+        Return data for one subject - THIS IS THE KEY METHOD
+        tips for Motor Imagery:
+            include C3, CZ, C4
+            may include FZ, PZ
+            don't include PO7, PO8, Oz
 
         """
         ch_names = ["FZ", "C3", "CZ", "C4", "PZ", "PO7", "OZ", "PO8"]
@@ -92,7 +99,27 @@ class CompetitionDataset(BaseDataset):
                 all_trial_data.append(trial_data)
 
                 # Create event at trial start
-                label = "left_hand" if trial_row.label == "Left" else "right_hand"
+                if self.paradigm == "imagery":
+                    if trial_row.label == "Left":
+                        label = "left_hand"
+                    elif trial_row.label == "Right":
+                        label = "right_hand"
+                    else:
+                        raise ValueError(f"unkown label for motor imagery {trial_row.label}")
+                elif self.paradigm == "ssvep":
+                    if trial_row.label == "Left":
+                        label = "10"
+                    elif trial_row.label == "Right":
+                        label = "13"
+                    elif trial_row.label == "Forward":
+                        label = "7"
+                    elif trial_row.label == "Backward":
+                        label = "8"
+                    else:
+                        raise ValueError(f"Got unkown label for SSVEP {trial_row.label}")
+                else:
+                    raise ValueError(f"Unkwon paradigm {self.paradigm}")
+
                 events_list.append([current_sample, 0, self.event_id[label]])
                 current_sample += trial_data.shape[0]
 
@@ -141,7 +168,7 @@ class CompetitionDataset(BaseDataset):
         return subject_paths
 
 
-def load_combined_moabb_data(datasets, paradigm_config=None, subjects_per_dataset=None):
+def load_combined_moabb_data(datasets, task="mi", paradigm_config=None, subjects_per_dataset=None):
     """
     Load and combine multiple MOABB datasets for DANN training.
 
@@ -156,15 +183,32 @@ def load_combined_moabb_data(datasets, paradigm_config=None, subjects_per_datase
         domain_labels: Dataset-specific subject IDs (continuous across datasets)
         dataset_info: Metadata about each dataset
     """
-    if paradigm_config is None:
-        paradigm_config = {
-            "channels": ["Cz", "C3", "C4"],
-            "tmin": 0.0,
-            "tmax": 4.0,
-            "resample": 250,
-        }
-
-    paradigm = LeftRightImagery(**paradigm_config)
+    if task.upper() == "MI":
+        if paradigm_config is None:
+            paradigm_config = {
+                "channels": ["Fz", "C3", "Cz", "C4", "Pz"],
+                "tmin": 0.0,
+                "tmax": 4.0,
+                "resample": 250,
+                "fmin": 8,
+                "fmax": 32,
+            }
+        paradigm = LeftRightImagery(**paradigm_config)
+    elif task.upper() == "SSVEP":
+        if paradigm_config is None:
+            paradigm_config = {
+                "events": ["7", "8", "10", "13"],  # Your specific frequencies
+                "n_classes": 4,
+                "tmin": 0.0,
+                "tmax": 4.0,  # Standard SSVEP window
+                "channels": ["Oz", "POz", "PO8", "Pz"],  # Occipital channels
+                "resample": 250,
+                "fmin": 7,  # Covers your lowest frequency
+                "fmax": 45,  # Standard SSVEP upper bound
+            }
+        paradigm = SSVEP(**paradigm_config)
+    else:
+        raise ValueError(f"task {task} is not a valid code")
 
     all_X = []
     all_class_labels = []
@@ -230,9 +274,9 @@ def load_combined_moabb_data(datasets, paradigm_config=None, subjects_per_datase
         current_subject_offset = next_offset
 
     # drop to match
-    tmin = paradigm_config['tmin']
-    tmax =paradigm_config['tmax']
-    sfreq = paradigm_config['resample']
+    tmin = paradigm_config["tmin"]
+    tmax = paradigm_config["tmax"]
+    sfreq = paradigm_config["resample"]
     max_possible_value = int((tmax - tmin) * sfreq)
 
     for i, x in enumerate(all_X):
@@ -255,33 +299,26 @@ def load_combined_moabb_data(datasets, paradigm_config=None, subjects_per_datase
 
 def analyze_dataset_channels(datasets):
     """
-    Analyze channels across multiple MOABB datasets and generate a comprehensive report.
-
-    Parameters
-    ----------
-    datasets : list of BaseDataset instances
-        List of MOABB dataset objects to analyze
-
-    Returns
-    -------
-    dict
-        Dictionary containing channel analysis results
+    Analyze channels and event labels across multiple MOABB datasets and generate a comprehensive report.
+    Only loads a single subject per dataset to minimize download requirements.
     """
     from collections import Counter
 
-    # Dictionary to store channels for each dataset
     dataset_channels = {}
+    dataset_labels = {}
     all_channels = []
-    # Array to store the formatted strings for printing at the end
+    all_labels = []
     dataset_channel_strings = []
+    dataset_label_strings = []
 
-    # Step 1: Extract channels from each dataset (no printing during loop)
     for dataset in datasets:
         dataset_name = type(dataset).__name__
 
         try:
-            # Get data for first subject to extract channel info
-            subject_data = dataset.get_data([dataset.subject_list[0]])[dataset.subject_list[0]]
+            # Get data for first subject only - this calls _get_single_subject_data internally
+            first_subject = dataset.subject_list[0]
+            subject_data = dataset._get_single_subject_data(first_subject)
+
             first_session = list(subject_data.keys())[0]
             first_run = list(subject_data[first_session].keys())[0]
             raw = subject_data[first_session][first_run]
@@ -290,63 +327,83 @@ def analyze_dataset_channels(datasets):
             raw.pick_types(eeg=True)
             channels = [ch for ch in raw.info["ch_names"] if ch.upper().find("EEG") == -1]
 
-            dataset_channels[dataset_name] = channels
-            all_channels.extend(channels)
+            # Extract event labels from dataset.events
+            labels = list(dataset.event_id.keys())
 
-            # Store the formatted string instead of printing immediately
-            dataset_channel_strings.append(f"{dataset_name} - {', '.join(sorted(channels))}")
+            dataset_channels[dataset_name] = channels
+            dataset_labels[dataset_name] = labels
+            all_channels.extend(channels)
+            all_labels.extend(labels)
+
+            # Store the formatted strings
+            dataset_channel_strings.append(f"{dataset_name} - Channels: {', '.join(sorted(channels))}")
+            dataset_label_strings.append(f"{dataset_name} - Labels: {', '.join(sorted(labels))}")
 
         except Exception as e:
             dataset_channels[dataset_name] = []
-            dataset_channel_strings.append(f"{dataset_name} - Error: {e}")
+            dataset_labels[dataset_name] = []
+            dataset_channel_strings.append(f"{dataset_name} - Channels: Error: {e}")
+            dataset_label_strings.append(f"{dataset_name} - Labels: Error: {e}")
 
-    # Step 2: Print all dataset-channel strings together at the end
+    # Print results
+    print("=== CHANNELS ===")
     for dataset_string in dataset_channel_strings:
         print(dataset_string)
 
-    print()  # Empty line before common channels report
+    print("\n=== LABELS ===")
+    for dataset_string in dataset_label_strings:
+        print(dataset_string)
 
-    # Step 3: Count channel frequencies and print minimal table
+    print("\n=== CHANNEL FREQUENCY ===")
     channel_counts = Counter(all_channels)
-
     for channel, count in channel_counts.most_common():
         print(f"{channel} {count}/{len(datasets)}")
 
-    return {"dataset_channels": dataset_channels, "channel_frequencies": dict(channel_counts), "common_channels": [ch for ch, count in channel_counts.items() if count == len(datasets)]}
+    print("\n=== LABEL FREQUENCY ===")
+    label_counts = Counter(all_labels)
+    for label, count in label_counts.most_common():
+        print(f"{label} {count}/{len(datasets)}")
+
+    return {
+        "dataset_channels": dataset_channels,
+        "dataset_labels": dataset_labels,
+        "channel_frequencies": dict(channel_counts),
+        "label_frequencies": dict(label_counts),
+        "common_channels": [ch for ch, count in channel_counts.items() if count == len(datasets)],
+        "common_labels": [label for label, count in label_counts.items() if count == len(datasets)],
+    }
 
 
 def main():
     # Example usage:
-    mi_channels = ["Fz", "C3", "Cz", "C4", "Pz"] 
-    datasets = [    
-        PhysionetMI(imagined=True),  # 109 subjects  
-        Weibo2014(),                # 10 subjects, 64 channels  
-        CompetitionDataset(),
+    datasets = [
+        # Wang2016(),
+        # Nakanishi2015(),
+        # MAMEM3(),
+        # MAMEM2(),
+        # MAMEM1(),
+        # Lee2019_SSVEP(),
+        # Kalunga2016(),
+        CompetitionDataset(paradigm_type="ssvep"),
     ]
-    # val_datasets = [CompetitionDataset(split="validation")]
 
-    # analyze_dataset_channels(datasets)
+    analyze_dataset_channels(datasets)
 
+    return
     # Load combined data
     X, class_labels, domain_labels, info = load_combined_moabb_data(
         datasets=datasets,
-        paradigm_config={
-            "channels": mi_channels,
-            "tmin": 1.0,
-            "tmax": 4.0,
-            "resample": 250,
-        },
+        task="ssvep",
         subjects_per_dataset={
-            'PhysionetMI': [1, 2, 3],
-            'Weibo2014': [1, 2, 3],
-            'CompetitionDataset': [1, 2, 3],
-        }
+            "CompetitionDataset": [1, 2, 3],
+        },
     )
 
     # Create combined labels for DANN
     combined_labels = np.column_stack([class_labels, domain_labels])
     print(f"Combined labels shape: {combined_labels.shape}")
     print(f"Sample combined labels: {combined_labels[:5]}")
+
 
 if __name__ == "__main__":
     main()
