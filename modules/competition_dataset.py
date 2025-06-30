@@ -151,10 +151,8 @@ class EEGDataset(Dataset):
         self.data = torch.from_numpy(data_array.copy()).to(torch.float32)
         # ...after any label/subject postprocessing...
         self.labels = torch.from_numpy(labels_np).to(torch.int64)
-        self.subjects = torch.from_numpy(subjects_np).to(torch.int64)
         self.trial_ids = trial_ids
         # Combine labels and subjects into (B, 2)
-        self.classes = torch.stack((self.labels, self.subjects), dim=1)
 
     def _normalize_signal(self, X_raw: np.ndarray, scalar_path: str):
         """
@@ -233,7 +231,7 @@ class EEGDataset(Dataset):
     def __getitem__(self, idx):
         # fetch raw sample
         x   = self.data[idx]      # shape: (C, T) or (C, F, T)
-        cls = self.classes[idx]   # unchanged label/domain tuple
+        cls = self.labels[idx]   # unchanged label/domain tuple
 
         if self.split == "train":
             # --- 1) time shift (both domains) ---
