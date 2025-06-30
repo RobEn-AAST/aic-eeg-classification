@@ -49,9 +49,23 @@ class CompetitionDataset(BaseDataset):
             raise ValueError(f"got unexpected paradigm {self.paradigm}")
 
         # they competition forced us to do this...
-        subject_row = subject + 30 if self.split == "validation" else subject
+        subject_row = subject
+        if self.split == "validation":
+            subject_row += 30
+        elif self.split == "test":
+            subject_row += 35
         # Load labels for this subject
-        labels_df = pd.read_csv(os.path.join(data_path, f"{self.split}.csv"), usecols=["subject_id", "trial_session", "trial", "task", "label"])
+        if self.split == "test":
+            labels_df = pd.read_csv(
+                os.path.join(data_path, f"{self.split}.csv"),
+                usecols=["subject_id", "trial_session", "trial", "task"]
+            )
+            labels_df["label"] = "Left"
+        else:
+            labels_df = pd.read_csv(
+                os.path.join(data_path, f"{self.split}.csv"),
+                usecols=["subject_id", "trial_session", "trial", "task", "label"]
+            )
         task_df = labels_df.query(f"task=='{task}' and subject_id=='S{subject_row}'")
 
         if task_df.empty:
@@ -317,11 +331,12 @@ def analyze_dataset_channels(datasets):
 
 def main():
     # Example usage:
+    lmao = CompetitionDataset(split="test")._get_single_subject_data(1)
     mi_channels = ["Fz", "C3", "Cz", "C4", "Pz"] 
     datasets = [    
-        PhysionetMI(imagined=True),  # 109 subjects  
-        Weibo2014(),                # 10 subjects, 64 channels  
-        CompetitionDataset(),
+        # PhysionetMI(imagined=True),  # 109 subjects  
+        # Weibo2014(),                # 10 subjects, 64 channels  
+        CompetitionDataset(split="test"),
     ]
     # val_datasets = [CompetitionDataset(split="validation")]
 

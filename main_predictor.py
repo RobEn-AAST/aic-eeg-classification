@@ -1,138 +1,157 @@
+import os
 import torch
 import numpy as np
 import pandas as pd
-from modules.competition_dataset import EEGDataset, decode_label, position_decode
-from Models import FilterBankRTSClassifier
 
-# Device and public variables
+# your modules
+from modules.competition_dataset import decode_label, position_decode
+from modules.competition_dataset import EEGDataset
+from modules.moabb_dataset     import load_combined_moabb_data, CompetitionDataset
+
+# braindecode
+from braindecode.models import EEGSimpleConv, EEGInceptionERP
+from braindecode         import EEGClassifier
+from Models              import FilterBankRTSClassifier  # for SSVEP fallback
+
+# Device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-SPLIT = "test"  #IW
-TRAIN_SPLIT = "train"  # split for training
-DATA_PATH = "./data/mtcaic3"
+
+# Paths & splits
+DATA_PATH   = "./data/mtcaic3"
+SPLIT       = "test"
 
 # -----------------------------------------------------------------------------
-# Motor Imagery pipeline with FilterBankRTSClassifier
+# Motor Imagery (MOABB) + pretrained EEGSimpleConv / EEGClassifier
 # -----------------------------------------------------------------------------
-# MI-specific settings (Optuna best)
-MI_BATCH_SIZE = 64
-MI_WINDOW_LENGTH = 1000
-MI_STRIDE = 85
-MI_TMIN = 60
-MI_CHANNELS = ["FZ", "CZ", "PZ", "PO7", "OZ"]
-MI_FS = 100
-MI_FILTER_ORDER = 3
-MI_N_ESTIMATORS = 300
-MI_MAX_DEPTH = None
-MI_MIN_SAMPLES_SPLIT = 7
-MI_MIN_SAMPLES_LEAF = 3
-MI_MAX_FEATURES = "sqrt"
+MI_CHANNELS = ["Fz", "C3", "Cz", "C4", "Pz"]
+MI_TMIN, MI_TMAX = 1.0, 7.0
+MI_RESAMPLE = 250
+
+# pretrained MI model hyperparameters
+n_chans, n_outputs = len(MI_CHANNELS), 2
+n_convs, kernel_size, feature_maps = 2, 8, 112
+resampling_freq = 100
+activation      = torch.nn.ELU
+
+# build & initialize MI classifier
+test_model = EEGSimpleConv(
+    n_chans=n_chans,
+    n_outputs=n_outputs,
+    sfreq=250,
+    feature_maps=feature_maps,
+    n_convs=n_convs,
+    kernel_size=kernel_size,
+    resampling_freq=resampling_freq,
+    activation=activation,
+)
+mi_clf = EEGClassifier(
+    test_model,
+    criterion=torch.nn.CrossEntropyLoss,
+    optimizer=torch.optim.Adam,
+    optimizer__lr=2.13537735805541e-05,
+    optimizer__weight_decay=0.0002624302515969059,
+    batch_size=128,
+    device=device,
+    verbose=0,
+)
+mi_clf.initialize()
+mi_clf.module_.load_state_dict(torch.load('./checkpoints/mi/eegsimpleconv.pth', map_location=device))
 
 
 def run_mi_task():
-    # Build lookup for submission IDs
-    df_meta = pd.read_csv(f"{DATA_PATH}/{SPLIT}.csv")
-    lookup = {(row.task, str(row.subject_id), str(row.trial_session), str(row.trial)): row.id for row in df_meta.itertuples() if row.task.upper() == "MI"}
-
-    # Load and train classifier
-    ds_train = EEGDataset(DATA_PATH, MI_WINDOW_LENGTH, MI_STRIDE, task="MI", split=TRAIN_SPLIT, read_labels=True, data_fraction=1, tmin=MI_TMIN, eeg_channels=MI_CHANNELS)
-    X_train = np.stack([x.numpy() for x, _ in ds_train])
-    y_train = np.array([label[0] for _, label in ds_train])
-    clf = FilterBankRTSClassifier(
-        fs=MI_FS,
-        order=MI_FILTER_ORDER,
-        n_estimators=MI_N_ESTIMATORS,
-        max_depth=MI_MAX_DEPTH,
-        min_samples_split=MI_MIN_SAMPLES_SPLIT,
-        min_samples_leaf=MI_MIN_SAMPLES_LEAF,
-        max_features=MI_MAX_FEATURES,
-        class_weight="balanced",
-        n_jobs=-1,
+    # load test data via MOABB
+    ds_test = CompetitionDataset(split=SPLIT)
+    X_test, _, _, _ = load_combined_moabb_data(
+        datasets=[ds_test],
+        paradigm_config={
+            "channels": MI_CHANNELS,
+            "tmin": MI_TMIN, "tmax": MI_TMAX,
+            "resample": MI_RESAMPLE,
+        }
     )
-    clf.fit(X_train, y_train)
-
-    # Inference
-    ds_inf = EEGDataset(DATA_PATH, MI_WINDOW_LENGTH, MI_STRIDE, task="MI", split=SPLIT, read_labels=False, data_fraction=1, tmin=MI_TMIN, eeg_channels=MI_CHANNELS)
-    windows = [x.numpy() for x, _ in ds_inf]
-    codes = ds_inf.labels.numpy()
-    X_windows = np.stack(windows)
-    probs = clf.predict_proba(X_windows)
+    probs = mi_clf.predict_proba(X_test)  # shape (50,2)
+    # assign IDs 4901..4950
     results = []
-    for code in sorted(np.unique(codes)):
-        idxs = np.where(codes == code)[0]
-        avg_prob = probs[idxs].mean(axis=0)
-        pred = int(np.argmax(avg_prob))
-        subj, sess, trial = position_decode(int(code))
-        key = ("MI", subj, sess, trial)
-        if key not in lookup:
-            raise RuntimeError(f"ID not found for MI key {key}")
-        results.append({"id": lookup[key], "label": decode_label(pred, "MI")})
+    for i in range(probs.shape[0]):
+        pred = int(probs[i].argmax())
+        results.append({"id": 4901 + i, "label": decode_label(pred, "MI")})
     return results
 
-
 # -----------------------------------------------------------------------------
-# SSVEP pipeline with FilterBankRTSClassifier
+# SSVEP pipeline with pretrained EEGInceptionERP + confidence-weighted ensembling
 # -----------------------------------------------------------------------------
-# SSVEP-specific settings (Optuna best)
-SS_WINDOW_LENGTH = 1000
-SS_STRIDE = 85
-SS_TMIN = 60
-SS_CHANNELS = ["C4", "CZ", "PZ"]
-SS_FS = 100
-SS_FILTER_ORDER = 3
-SS_N_ESTIMATORS = 300
-SS_MAX_DEPTH = None
-SS_MIN_SAMPLES_SPLIT = 7
-SS_MIN_SAMPLES_LEAF = 3
+SS_CHANNELS          = ["OZ", "PO7", "PO8", "PZ"]
+SS_WINDOW_LENGTH     = 1000
+SS_STRIDE            = 20
+SS_MODEL_PATH        = './checkpoints/ssvep/eeginception.pth'
 
+# build & initialize SSVEP classifier (EEGInceptionERP)
+ss_model = EEGInceptionERP(
+    n_chans=len(SS_CHANNELS),
+    n_outputs=4,
+    n_times=SS_WINDOW_LENGTH,
+    sfreq=250,
+    drop_prob=0.5,
+    n_filters=8,
+    activation=torch.nn.ELU,
+)
+ss_clf = EEGClassifier(
+    ss_model,
+    criterion=torch.nn.CrossEntropyLoss,
+    optimizer=torch.optim.Adam,
+    optimizer__lr=2.13537735805541e-05,
+    optimizer__weight_decay=0.0002624302515969059,
+    batch_size=128,
+    device=device,
+    verbose=0,
+)
+ss_clf.initialize()
+ss_clf.module_.load_state_dict(torch.load(SS_MODEL_PATH, map_location=device))
 
 def run_ssvep_task():
-    # Build lookup for submission IDs
+    # build lookup
     df_meta = pd.read_csv(f"{DATA_PATH}/{SPLIT}.csv")
-    lookup = {(row.task, str(row.subject_id), str(row.trial_session), str(row.trial)): row.id for row in df_meta.itertuples() if row.task.upper() == "SSVEP"}
-
-    # Load and train classifier
-    ds_train = EEGDataset(DATA_PATH, SS_WINDOW_LENGTH, SS_STRIDE, task="SSVEP", split=TRAIN_SPLIT, read_labels=True, data_fraction=1, tmin=SS_TMIN, eeg_channels=SS_CHANNELS)
-    X_train = np.stack([x.numpy() for x, _ in ds_train])
-    y_train = np.array([label[0] for _, label in ds_train])
-    clf = FilterBankRTSClassifier(
-        fs=SS_FS,
-        order=SS_FILTER_ORDER,
-        n_estimators=SS_N_ESTIMATORS,
-        max_depth=SS_MAX_DEPTH,
-        min_samples_split=SS_MIN_SAMPLES_SPLIT,
-        min_samples_leaf=SS_MIN_SAMPLES_LEAF,
-        max_features="sqrt",
-        class_weight="balanced",
-        n_jobs=-1,
+    lookup = {
+        (row.task.upper(), str(row.subject_id), str(row.trial_session), str(row.trial)): row.id
+        for row in df_meta.itertuples()
+        if row.task.upper() == "SSVEP"
+    }
+    # load all windows for test
+    ds_inf = EEGDataset(
+        DATA_PATH, SS_WINDOW_LENGTH, SS_STRIDE,
+        task="SSVEP", split=SPLIT, read_labels=False,
+        data_fraction=1, tmin=1, eeg_channels=SS_CHANNELS
     )
-    clf.fit(X_train, y_train)
-
-    # Inference
-    ds_inf = EEGDataset(DATA_PATH, SS_WINDOW_LENGTH, SS_STRIDE, task="SSVEP", split=SPLIT, read_labels=False, data_fraction=1, tmin=SS_TMIN, eeg_channels=SS_CHANNELS)
-    windows = [x.numpy() for x, _ in ds_inf]
-    codes = ds_inf.labels.numpy()
+    windows = [x.numpy() for x,_ in ds_inf]
+    codes   = ds_inf.labels.numpy()
     X_windows = np.stack(windows)
-    probs = clf.predict_proba(X_windows)
+
+    # inference per window
+    probs = ss_clf.predict_proba(X_windows)  # shape (N_windows,4)
+
+    # confidence-weighted ensembling per trial
+    # weight each window by its max predicted probability (confidence)
+    confidences = np.max(probs, axis=1)            # shape (N_windows,)
+    weighted   = probs * confidences[:, None]      # broadcast multiply
+
     results = []
     for code in sorted(np.unique(codes)):
         idxs = np.where(codes == code)[0]
-        avg_prob = probs[idxs].mean(axis=0)
-        pred = int(np.argmax(avg_prob))
+        # weighted average of class probabilities
+        agg = weighted[idxs].sum(axis=0) / confidences[idxs].sum()
+        pred = int(np.argmax(agg))
         subj, sess, trial = position_decode(int(code))
         key = ("SSVEP", subj, sess, trial)
         if key not in lookup:
-            raise RuntimeError(f"ID not found for SSVEP key {key}")
+            raise KeyError(f"No submission ID for {key}")
         results.append({"id": lookup[key], "label": decode_label(pred, "SSVEP")})
     return results
 
-
 # -----------------------------------------------------------------------------
-# Main: combine and save submission.csv
+# Main: combine & save submission.csv
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    mi_results = run_mi_task()
-    ssvep_results = run_ssvep_task()
-    all_results = mi_results + ssvep_results
-    out = "submission.csv"
-    pd.DataFrame(all_results).sort_values("id").to_csv(out, index=False)
-    print(f"Saved {out}")
+    mi_res    = run_mi_task()
+    ssvep_res = run_ssvep_task()
+    pd.DataFrame(mi_res + ssvep_res).sort_values("id").to_csv("submission.csv", index=False)
+    print("Saved submission.csv")
