@@ -15,7 +15,8 @@ import os
 
 
 # %%
-data_path = "/home/zeyadcode/Workspace/ai_projects/eeg_detection/data/mtcaic3"
+data_path = "./data/mtcaic3"
+
 
 
 class CompetitionDataset(BaseDataset):
@@ -145,6 +146,7 @@ class CompetitionDataset(BaseDataset):
             sessions[str(session_id)] = {"0": raw}
 
         if sessions is None:
+        if sessions is None:
             print(f"\n\n\nWARNING TASK DF EMPTY {subject} AT ROW {subject_row} AT SPLIT {self.split}\n\n\n")
             return {"0": {"0": None}}
         else:
@@ -166,6 +168,7 @@ class CompetitionDataset(BaseDataset):
                     subject_paths.append(eeg_file)
 
         return subject_paths
+
 
 
 def load_combined_moabb_data(datasets, task="mi", paradigm_config=None, subjects_per_dataset=None):
